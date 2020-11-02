@@ -1,0 +1,17 @@
+globals
+    real round_start = 0.00
+    real round_end = 1.00
+    boolean is_round_active = false
+endglobals
+
+function toggleRound takes nothing returns nothing
+    if round_start == 0.00 then
+        set round_start = 1.00
+        set round_end = 0.00
+        set is_round_active = true
+    else
+        set round_start = 0.00
+        set round_end = 1.00
+        set is_round_active = false
+    endif
+endfunction

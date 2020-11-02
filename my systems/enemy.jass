@@ -1,0 +1,65 @@
+struct EnemyData extends array
+    private static integer c = 1
+    static real ENEMY_DEATH_TIME = 3.67
+    static Table by_id
+    static Table dying_units
+        
+    boolean is_alive
+    unit unit
+    real dead_t
+
+    static method create takes integer uid, player p, real x, real y, real f returns thistype
+        local unit new_unit = Recycler[uid].makeEnemy(p,x,y,f)
+        local thistype this = c
+        set c = c+1
+
+        set by_id.integer[GetHandleId(new_unit)] = this
+        set is_alive = true
+        set unit = new_unit
+        
+        return this
+    endmethod
+
+    static method operator [] takes unit u returns thistype
+        return by_id.integer[GetHandleId(u)]
+    endmethod
+
+    method die takes nothing returns nothing
+        local timer death_timer
+        if is_alive then
+            set death_timer = CreateTimer()
+            set is_alive = false
+            call IssueImmediateOrder(unit, "stop")
+            call BlzPauseUnitEx(unit, true)
+            call SetUnitAnimation(unit, "death")
+            call UnitAddAbility(unit, 'Aloc')
+            call TimerStart(death_timer, TICK32, false, function thistype.recycleUnit)
+            set dying_units.unit[GetHandleId(death_timer)] = unit
+            set dead_t = 0
+            set death_timer = null
+        endif
+    endmethod
+
+    static method recycleUnit takes nothing returns nothing
+        local thistype this = by_id.integer[GetHandleId(dying_units.unit[GetHandleId(GetExpiredTimer())])]
+        if dead_t < ENEMY_DEATH_TIME then
+            set dead_t = dead_t + TICK32
+            call SetUnitVertexColor(unit, 255, 255, 255, 255-R2I(255*dead_t/ENEMY_DEATH_TIME))
+            call TimerStart(GetExpiredTimer(), TICK32, false, function thistype.recycleUnit)
+        else
+            set is_alive = true
+            call SetUnitVertexColor(unit, 255, 255, 255, 255)
+            call SetWidgetLife(unit, BlzGetUnitMaxHP(unit))
+            call BlzPauseUnitEx(unit, false)
+            call ShowUnit(unit, false)
+            call GroupAddUnit(Recycler[GetUnitTypeId(unit)].grp, unit)
+        endif
+    endmethod
+
+    private static method onInit takes nothing returns nothing
+        call Recycler.create('n000', false)
+        call Recycler.create('n003', false)
+        set dying_units = Table.create()
+        set by_id = Table.create()
+    endmethod
+endstruct

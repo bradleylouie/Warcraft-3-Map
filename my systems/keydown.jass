@@ -1,0 +1,51 @@
+module KeyDown
+    /*constant oskeytype            OSKEY_Q                              = ConvertOsKeyType($51)
+    constant oskeytype              OSKEY_W                              = ConvertOsKeyType($57)
+    constant oskeytype              OSKEY_E                              = ConvertOsKeyType($45)
+    constant oskeytype              OSKEY_R                              = ConvertOsKeyType($52)
+
+    constant oskeytype              OSKEY_A                              = ConvertOsKeyType($41)
+    constant oskeytype              OSKEY_S                              = ConvertOsKeyType($53)
+    constant oskeytype              OSKEY_D                              = ConvertOsKeyType($44)
+    constant oskeytype              OSKEY_F                              = ConvertOsKeyType($46)
+    
+    constant oskeytype              OSKEY_Z                              = ConvertOsKeyType($5A)
+    constant oskeytype              OSKEY_X                              = ConvertOsKeyType($58)
+    constant oskeytype              OSKEY_C                              = ConvertOsKeyType($43)
+    constant oskeytype              OSKEY_V                              = ConvertOsKeyType($56)*/
+    private static trigger keydown_trig = CreateTrigger()
+    private static trigger keyup_trig = CreateTrigger()
+    boolean keydown
+
+    static method keyDown takes nothing returns nothing
+        local thistype this
+        call GroupEnumUnitsSelected(grp, GetTriggerPlayer(), null)
+		set this = GetUnitUserData(FirstOfGroup(grp))
+		if h.owner == GetTriggerPlayer() then
+			set keydown = true
+		endif
+		call GroupClear(grp)
+    endmethod
+
+    static method keyUp takes nothing returns nothing
+        local thistype this
+        call GroupEnumUnitsSelected(grp, GetTriggerPlayer(), null)
+		set this = GetUnitUserData(FirstOfGroup(grp))
+		if h.owner == GetTriggerPlayer() then
+			set keydown = false
+		endif
+		call GroupClear(grp)
+    endmethod
+
+    method regKey takes integer key returns nothing
+        local HeroData h = this
+        call BlzTriggerRegisterPlayerKeyEvent(keydown_trig, h.owner, ConvertOsKeyType(key), 0, true)
+        call BlzTriggerRegisterPlayerKeyEvent(keyup_trig, h.owner, ConvertOsKeyType(key), 0, false)
+        set keydown = false
+    endmethod
+
+    private static method onInit takes nothing returns nothing
+        call TriggerAddCondition(keydown_trig, function thistype.keyDown)
+        call TriggerAddCondition(keyup_trig, function thistype.keyUp)
+    endmethod
+endmodule

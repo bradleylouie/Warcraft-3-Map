@@ -1,0 +1,305 @@
+globals
+	framehandle array mana_overlay
+endglobals
+library StatFrame uses UIUtils
+
+function InitFrames takes nothing returns nothing
+	local integer i = 1
+	local integer k = 0
+	//one horizontal pixel in 1920x1080 should be 0.00055338, vertical is .00055555...
+	//local UIFrame overlay = UIFrame.create(true, UIFrame.TYPE_SIMPLE_TEXTURE, UIFrame.Null, 0 ,0, 9)
+	local framehandle overlay = BlzCreateFrameByType("BACKDROP", "Overlay", BlzGetOriginFrame(ORIGIN_FRAME_GAME_UI, 0),"", 0)
+	local framehandle overlaybg = BlzCreateSimpleFrame("OverlayBG", BlzGetOriginFrame(ORIGIN_FRAME_GAME_UI, 0), 0)
+	local UIFrame overlaytip = UIFrame.create(true, UIFrame.TYPE_SIMPLE_TEXTURE, UIFrame.Null, 0 ,0, 1)
+	local UIFrame minimap_border = UIFrame.create(true, UIFrame.TYPE_SIMPLE_TEXTURE, UIFrame.Null, 0 ,0, 1)
+
+	local framehandle power_icon_label = BlzCreateFrameByType("TEXT", "PowerIconLabel", BlzGetOriginFrame(ORIGIN_FRAME_GAME_UI, 0),"", 0)
+    local framehandle power_icon_hover = BlzCreateFrameByType("FRAME", "PowerIconFrame", BlzGetOriginFrame(ORIGIN_FRAME_GAME_UI, 0),"", 0)
+	local framehandle power_icon_tooltip = BlzCreateFrame("BoxedText", power_icon_hover, 0, 0)
+		local framehandle total_damage_label = BlzCreateFrame("SubStatText", power_icon_hover,0, 0)
+		local framehandle total_damage_hover = BlzCreateFrameByType("FRAME", "TotalDamageFrame", BlzGetOriginFrame(ORIGIN_FRAME_GAME_UI, 0),"", 0) 
+		local framehandle total_damage_tooltip = BlzCreateFrame("BoxedText", total_damage_hover, 0, 2)
+
+	local framehandle speed_icon_label = BlzCreateFrameByType("TEXT", "SpeedIconLabel", BlzGetOriginFrame(ORIGIN_FRAME_GAME_UI, 0),"", 0)
+	local framehandle speed_icon_hover = BlzCreateFrameByType("FRAME", "SpeedIconFrame", BlzGetOriginFrame(ORIGIN_FRAME_GAME_UI, 0),"", 0) 
+	local framehandle speed_icon_tooltip = BlzCreateFrame("BoxedText", speed_icon_hover, 0, 1)
+		local framehandle walkspeed_label = BlzCreateFrame("SubStatText", speed_icon_hover,0, 1)
+		local framehandle walkspeed_hover = BlzCreateFrameByType("FRAME", "WalkSpeedFrame", BlzGetOriginFrame(ORIGIN_FRAME_GAME_UI, 0),"", 0) 
+		local framehandle walkspeed_tooltip = BlzCreateFrame("BoxedText", walkspeed_hover, 0, 3)
+
+	local framehandle array ability_counter
+	local framehandle texture
+	loop
+		exitwhen k == 16
+		set ability_counter[k] = BlzCreateFrame("AbilityCounterText", BlzGetOriginFrame(ORIGIN_FRAME_GAME_UI, 0),0, k)
+		set k = k+1
+	endloop
+
+	set k = 0
+	loop
+		exitwhen k == 12
+		set mana_overlay[k] = BlzCreateSimpleFrame("OOMFrame", BlzGetOriginFrame(ORIGIN_FRAME_GAME_UI, 0), k)
+		call BlzFrameSetAllPoints(mana_overlay[k], BlzGetFrameByName("CommandButton_"+I2S(k), 0))
+		call BlzFrameSetLevel(mana_overlay[k], 9)
+		call BlzFrameSetVisible(mana_overlay[k], false)
+		set k = k+1
+	endloop
+	
+	//-------------power frame------------------
+	call BlzFrameSetTooltip(power_icon_hover, power_icon_tooltip)
+	call BlzFrameSetSize(power_icon_hover, 0.029433, 0.029433)
+	call BlzFrameSetAbsPoint(power_icon_hover, FRAMEPOINT_BOTTOMLEFT, 0.28213, 0.07)
+	call BlzFrameSetPoint(power_icon_tooltip, FRAMEPOINT_BOTTOMLEFT, power_icon_hover, FRAMEPOINT_TOPLEFT, 0.0, 0.0)
+	call BlzFrameSetSize(power_icon_tooltip, 0.125, 0.052)
+	call BlzFrameSetPoint(power_icon_label, FRAMEPOINT_CENTER, power_icon_hover, FRAMEPOINT_BOTTOMRIGHT, -0.0038736, .0027669)
+
+	call BlzFrameSetText(BlzGetFrameByName("BoxedTextValue", 0), "Used by ability parameters designated |cff3399ffblue|r. Cannot be reduced below 5.")
+	call BlzFrameSetText(BlzGetFrameByName("BoxedTextTitle", 0), "|cffffcc00Power|r")
+
+		//-----------total damage frame--------------
+		call BlzFrameSetPoint(total_damage_label, FRAMEPOINT_BOTTOMLEFT, power_icon_hover, FRAMEPOINT_BOTTOMLEFT, .0110676, -.01220676)//-.01165176)
+		call BlzFrameSetText(total_damage_label, "22.5k")
+		
+		call BlzFrameSetTooltip(total_damage_hover, total_damage_tooltip)
+		call BlzFrameSetSize(total_damage_hover, 0.029433, 0.0116666)
+		call BlzFrameSetPoint(total_damage_hover, FRAMEPOINT_TOP, power_icon_hover, FRAMEPOINT_BOTTOM, 0,0)
+		call BlzFrameSetPoint(total_damage_tooltip, FRAMEPOINT_BOTTOMLEFT, total_damage_hover, FRAMEPOINT_TOPLEFT, 0.0, 0.0)
+		call BlzFrameSetSize(total_damage_tooltip, 0.13675, 0.019)
+		call BlzFrameSetPoint(total_damage_label, FRAMEPOINT_CENTER, total_damage_hover, FRAMEPOINT_BOTTOMRIGHT, -0.0038736, .0027669)
+		call BlzFrameSetText(BlzGetFrameByName("BoxedTextTitle", 2), "Total damage done this round")
+
+	//-------------speed frame------------------
+	call BlzFrameSetTooltip(speed_icon_hover, speed_icon_tooltip)
+	call BlzFrameSetSize(speed_icon_hover, 0.029433, 0.029433)
+	call BlzFrameSetAbsPoint(speed_icon_hover, FRAMEPOINT_BOTTOMLEFT, 0.28213, 0.028333)
+	call BlzFrameSetPoint(speed_icon_tooltip, FRAMEPOINT_BOTTOMLEFT, speed_icon_hover, FRAMEPOINT_TOPLEFT, 0.0, 0.0)
+	call BlzFrameSetSize(speed_icon_tooltip, 0.125, 0.088)
+	call BlzFrameSetPoint(speed_icon_label, FRAMEPOINT_CENTER, speed_icon_hover, FRAMEPOINT_BOTTOMRIGHT, -0.0038736, .0027669)
+
+	call BlzFrameSetText(BlzGetFrameByName("BoxedTextValue", 1), "Used by ability parameters designated |cff9acd32green|r. Determines the time scale for many actions, where each point is 10% progress rate for the parameter. Cannot be reduced below 5.")
+	call BlzFrameSetText(BlzGetFrameByName("BoxedTextTitle", 1), "|cffffcc00Speed|r")
+
+	call BlzFrameSetPoint(walkspeed_label, FRAMEPOINT_BOTTOMLEFT, speed_icon_hover, FRAMEPOINT_BOTTOMLEFT, .0110676, -.01220676)
+	call BlzFrameSetText(walkspeed_label, "222")
+
+		//-----------walkspeed frame--------------
+		call BlzFrameSetPoint(walkspeed_label, FRAMEPOINT_BOTTOMLEFT, speed_icon_hover, FRAMEPOINT_BOTTOMLEFT, .0110676, -.01220676)//-.01165176)
+		call BlzFrameSetText(walkspeed_label, "250")
+
+		call BlzFrameSetTooltip(walkspeed_hover, walkspeed_tooltip)
+		call BlzFrameSetSize(walkspeed_hover, 0.029433, 0.0116666)
+		call BlzFrameSetPoint(walkspeed_hover, FRAMEPOINT_TOP, speed_icon_hover, FRAMEPOINT_BOTTOM, 0,0)
+		call BlzFrameSetPoint(walkspeed_tooltip, FRAMEPOINT_BOTTOMLEFT, walkspeed_hover, FRAMEPOINT_TOPLEFT, 0.0, 0.0)
+		call BlzFrameSetSize(walkspeed_tooltip, 0.086, 0.019)
+		call BlzFrameSetPoint(walkspeed_label, FRAMEPOINT_CENTER, walkspeed_hover, FRAMEPOINT_BOTTOMRIGHT, -0.0038736, .0027669)
+		call BlzFrameSetText(BlzGetFrameByName("BoxedTextTitle", 3), "Movement speed")
+
+	//------------------overlay------------------
+	//set overlay.texture = "overlay.tga"
+	//call overlay.setAnchorPoint(0.5, 0)
+	//call overlay.setPivotPoint(0.5, 0)
+	//call overlay.setSize(743, 312)
+
+	call BlzFrameSetSize(overlay, 0.41116, 0.17333)
+	call BlzFrameSetAbsPoint(overlay, FRAMEPOINT_BOTTOM, 0.4, 0)
+	call BlzFrameSetTexture(overlay, "overlay.tga", 0, true)
+
+	set overlaytip.texture = "overlaydecor.tga"
+	call overlaytip.setAnchorPoint(0.5, 0)
+	call overlaytip.setPivotPoint(0.5, 0)
+	call overlaytip.setSize(739, 311.5)
+
+	set minimap_border.texture = "minimap.tga"
+	call minimap_border.setAnchorPoint(0, 0)
+	call minimap_border.setSize(1092, 319)
+
+	call BlzFrameSetSize(overlaybg, 0.60666, 0.17722)
+	call BlzFrameSetAbsPoint(overlaybg, FRAMEPOINT_BOTTOMLEFT, 0, 0)
+
+	call BlzFrameSetAbsPoint(BlzGetOriginFrame(ORIGIN_FRAME_UBERTOOLTIP, 0), FRAMEPOINT_BOTTOMLEFT, 0.255, 0.155555)
+	call BlzFrameSetAbsPoint(BlzGetOriginFrame(ORIGIN_FRAME_UBERTOOLTIP, 0), FRAMEPOINT_BOTTOMRIGHT, 0.545, 0.155555)
+
+	call BlzFrameSetSize(BlzGetFrameByName("ConsoleUIBackdrop",0), 0.000, 0.0001)
+	//-------------positioning ability frames-----------
+	
+	call BlzFrameClearAllPoints(BlzGetFrameByName("CommandButton_0", 0))
+	call BlzFrameSetAbsPoint(BlzGetFrameByName("CommandButton_0", 0), FRAMEPOINT_BOTTOM, 0.33691, 0.0627821)
+
+	call BlzFrameSetParent(BlzGetFrameByName("CommandButton_0", 0), overlaybg)
+	call BlzFrameSetPoint(ability_counter[0], FRAMEPOINT_BOTTOMRIGHT, BlzGetFrameByName("CommandButton_0", 0), FRAMEPOINT_BOTTOMRIGHT, -.002213, 0.0011111)
+	call BlzFrameSetPoint(ability_counter[8], FRAMEPOINT_TOPRIGHT, BlzGetFrameByName("CommandButton_0", 0), FRAMEPOINT_TOPRIGHT, -.002213, -0.0022222)
+	//-------------annoying ass string building because they got rid of iterators fucking morons-----------
+	loop
+		call BlzFrameClearAllPoints(BlzGetFrameByName("CommandButton_" + I2S(i), 0))
+		call BlzFrameSetPoint(BlzGetFrameByName("CommandButton_" + I2S(i), 0), FRAMEPOINT_LEFT, BlzGetFrameByName("CommandButton_" + I2S(i-1), 0), FRAMEPOINT_RIGHT, 0.00387366, 0)
+		call BlzFrameSetParent(BlzGetFrameByName("CommandButton_" + I2S(i), 0), overlaybg)
+		call BlzFrameSetPoint(ability_counter[i], FRAMEPOINT_BOTTOMRIGHT, BlzGetFrameByName("CommandButton_" + I2S(i), 0), FRAMEPOINT_BOTTOMRIGHT, -.002213, 0.0011111)
+		call BlzFrameSetPoint(ability_counter[i+8], FRAMEPOINT_TOPRIGHT, BlzGetFrameByName("CommandButton_" + I2S(i), 0), FRAMEPOINT_TOPRIGHT, -.002213, -0.0022222)
+		set i = i+1
+		exitwhen i == 4
+	endloop
+	call BlzFrameClearAllPoints(BlzGetFrameByName("CommandButton_4", 0))
+	call BlzFrameSetPoint(BlzGetFrameByName("CommandButton_4", 0), FRAMEPOINT_TOP, BlzGetFrameByName("CommandButton_0", 0), FRAMEPOINT_BOTTOM, 0, -0.005)
+	call BlzFrameSetParent(BlzGetFrameByName("CommandButton_4", 0), overlaybg)
+	call BlzFrameSetPoint(ability_counter[4], FRAMEPOINT_BOTTOMRIGHT, BlzGetFrameByName("CommandButton_4", 0), FRAMEPOINT_BOTTOMRIGHT, -.002213, 0.0011111)
+	call BlzFrameSetPoint(ability_counter[12], FRAMEPOINT_TOPRIGHT, BlzGetFrameByName("CommandButton_4", 0), FRAMEPOINT_TOPRIGHT, -.002213, -0.0022222)
+	set i = 5
+	loop
+		call BlzFrameClearAllPoints(BlzGetFrameByName("CommandButton_" + I2S(i), 0))
+		call BlzFrameSetPoint(BlzGetFrameByName("CommandButton_" + I2S(i), 0), FRAMEPOINT_LEFT, BlzGetFrameByName("CommandButton_" + I2S(i-1), 0), FRAMEPOINT_RIGHT, 0.00387366, 0)
+		call BlzFrameSetParent(BlzGetFrameByName("CommandButton_" + I2S(i), 0), overlaybg)
+		call BlzFrameSetPoint(ability_counter[i], FRAMEPOINT_BOTTOMRIGHT, BlzGetFrameByName("CommandButton_" + I2S(i), 0), FRAMEPOINT_BOTTOMRIGHT, -.002213, 0.0011111)
+		call BlzFrameSetPoint(ability_counter[i+8], FRAMEPOINT_TOPRIGHT, BlzGetFrameByName("CommandButton_" + I2S(i), 0), FRAMEPOINT_TOPRIGHT, -.002213, -0.0022222)
+		set i = i+1
+		exitwhen i == 8
+	endloop
+
+	call BlzFrameSetParent(BlzGetFrameByName("CommandButton_8", 0), overlaybg)
+	call BlzFrameSetParent(BlzGetFrameByName("CommandButton_9", 0), overlaybg)
+	call BlzFrameSetParent(BlzGetFrameByName("CommandButton_10", 0), overlaybg)
+	call BlzFrameSetParent(BlzGetFrameByName("CommandButton_11", 0), overlaybg)
+	call BlzFrameClearAllPoints(BlzGetFrameByName("CommandButton_8", 0))
+	call BlzFrameSetPoint(BlzGetFrameByName("CommandButton_8", 0), FRAMEPOINT_LEFT, BlzGetFrameByName("CommandButton_3", 0), FRAMEPOINT_RIGHT, 0.012, 0)
+	call BlzFrameClearAllPoints(BlzGetFrameByName("CommandButton_9", 0))
+	call BlzFrameSetPoint(BlzGetFrameByName("CommandButton_9", 0), FRAMEPOINT_LEFT, BlzGetFrameByName("CommandButton_8", 0), FRAMEPOINT_RIGHT, 0.005, 0)
+	call BlzFrameClearAllPoints(BlzGetFrameByName("CommandButton_10", 0))
+	call BlzFrameSetPoint(BlzGetFrameByName("CommandButton_10", 0), FRAMEPOINT_LEFT, BlzGetFrameByName("CommandButton_7", 0), FRAMEPOINT_RIGHT, 0.012, 0)
+	call BlzFrameClearAllPoints(BlzGetFrameByName("CommandButton_11", 0))
+	call BlzFrameSetPoint(BlzGetFrameByName("CommandButton_11", 0), FRAMEPOINT_LEFT, BlzGetFrameByName("CommandButton_10", 0), FRAMEPOINT_RIGHT, 0.005, 0)
+
+	call UIUtils.RefreshDefaultFrames()
+endfunction
+
+function CreateBars takes nothing returns nothing
+	local framehandle hp_bar = BlzCreateSimpleFrame("Bar", BlzGetOriginFrame(ORIGIN_FRAME_GAME_UI, 0), 1) //Create Bar at createContext 1
+	local framehandle mp_bar = BlzCreateSimpleFrame("Bar", BlzGetOriginFrame(ORIGIN_FRAME_GAME_UI, 0), 2) //createContext 2
+	local framehandle sp_bar = BlzCreateSimpleFrame("BarSp", BlzGetOriginFrame(ORIGIN_FRAME_GAME_UI, 0), 3) //createContext 2
+	//local framehandle hp_label = BlzCreateFrameByType("TEXT", "BarLabel", hp_bar,"", 1)
+	//local framehandle mp_label = BlzCreateFrameByType("TEXT", "BarLabel", mp_bar,"", 2)
+	//local framehandle sp_label = BlzCreateFrameByType("TEXT", "BarLabel", sp_bar,"", 3)
+
+	call BlzFrameSetSize(hp_bar, 0.35, .014)
+	call BlzFrameSetSize(mp_bar, 0.35, .014)
+	call BlzFrameSetSize(sp_bar, 0.35, .009)
+
+	call BlzFrameSetAbsPoint(hp_bar, FRAMEPOINT_CENTER, 0.4, 0.1377)
+	call BlzFrameSetPoint(mp_bar, FRAMEPOINT_TOP, hp_bar, FRAMEPOINT_BOTTOM, 0.0, 0.0) // pos bar2 below bar
+	call BlzFrameSetPoint(sp_bar, FRAMEPOINT_TOP, mp_bar, FRAMEPOINT_BOTTOM, 0.0, 0.0) // pos bar2 below bar
+	//call BlzFrameSetPoint(hp_label, FRAMEPOINT_CENTER, hp_bar, FRAMEPOINT_CENTER, 0,0)
+	//call BlzFrameSetPoint(mp_label, FRAMEPOINT_CENTER, mp_bar, FRAMEPOINT_CENTER, 0,0)
+	//call BlzFrameSetPoint(sp_label, FRAMEPOINT_CENTER, sp_bar, FRAMEPOINT_CENTER, 0,0)
+
+	call BlzFrameSetTexture(hp_bar, "Replaceabletextures\\Teamcolor\\Teamcolor06.blp", 0, true) //change the BarTexture of bar to color red
+	call BlzFrameSetTexture(mp_bar, "Replaceabletextures\\Teamcolor\\Teamcolor01.blp", 0, true) //color blue for bar2	call BlzFrameSetTexture(BlzGetFrameByName("BarBackground",4), "Replaceabletextures\\CommandButtonsDisabled\\DISBTNHeroPaladin.blp", 0, true) //Change the background to DisabledPaladin-Face. ("BarBackground", 4) belongs to Bar4. would Bar4 be a "BarEx" one would have to write "BarExBackground" cause they are named differently in fdf.
+	call BlzFrameSetTexture(sp_bar, "Replaceabletextures\\Teamcolor\\Teamcolor03.blp", 0, true)
+endfunction
+
+function SetFrames takes nothing returns nothing
+    local HeroData h
+	//local EnemyData e
+    local unit u = GetTriggerUnit()
+   	
+	if 0!=GetUnitUserData(u) then
+		call BlzFrameSetVisible(BlzGetFrameByName("Bar", 1), true)
+		call BlzFrameSetValue(BlzGetFrameByName("Bar",1), GetUnitLifePercent(u))
+		call BlzFrameSetText(BlzGetFrameByName("BarText",1), I2S(R2I(GetWidgetLife(u)))+"/"+I2S(R2I(GetUnitState(u, UNIT_STATE_MAX_LIFE))))
+		call BlzFrameSetText(BlzGetFrameByName("SubStatText",1), I2S(R2I(GetUnitMoveSpeed(u))))
+		if IsUnitAlly(u, GetTriggerPlayer()) then
+			//call BlzFrameSetVisible(BlzGetFrameByName("Icon", 3), false)
+			set h = GetUnitUserData(u)
+			call BlzFrameSetText(BlzGetFrameByName("PowerIconLabel", 0), I2S(R2I(h.getPow(false))))
+			call BlzFrameSetText(BlzGetFrameByName("SpeedIconLabel", 0), I2S(R2I(h.getSpd(false))))
+
+			call h.updateDamage()
+			call h.updateMS()
+			call h.showAbilityCounters()
+			call h.showManaFrames()
+
+			call BlzFrameSetVisible(BlzGetFrameByName("Bar",2), true)
+			call BlzFrameSetVisible(BlzGetFrameByName("BarSp",3), true)
+			call BlzFrameSetValue(BlzGetFrameByName("Bar",2), GetUnitManaPercent(u))
+			call BlzFrameSetValue(BlzGetFrameByName("BarSp",3), R2I(h.special))
+			call BlzFrameSetText(BlzGetFrameByName("BarText",2), I2S(R2I(GetUnitState(u, UNIT_STATE_MANA)))+"/"+I2S(R2I(GetUnitState(u, UNIT_STATE_MAX_MANA))))
+			call BlzFrameSetText(BlzGetFrameByName("BarText",3), I2S(R2I(h.special)))
+		else
+			call HeroData.hideAbilityCounters()
+			call BlzFrameSetVisible(BlzGetFrameByName("Bar",2), false)
+			call BlzFrameSetVisible(BlzGetFrameByName("BarSp",3), false)
+			//set e = GetUnitUserData(u)
+			//call BlzFrameSetVisible(BlzGetFrameByName("Icon", 3), true)
+			//call BlzFrameSetText(BlzGetFrameByName("IconLabel", 0), I2S(R2I(h.getPow(false))))
+		endif
+	else
+		call HeroData.hideAbilityCounters()
+		call BlzFrameSetVisible(BlzGetFrameByName("Bar", 1), false)
+		call BlzFrameSetVisible(BlzGetFrameByName("Bar", 2), false)
+		call BlzFrameSetVisible(BlzGetFrameByName("BarSp", 3), false)
+		//call BlzFrameSetVisible(BlzGetFrameByName("Icon", 3), false)
+	endif
+	set u = null
+	call GroupClear(grp)
+endfunction
+
+function InitBackdrop takes nothing returns nothing
+	local framehandle blackbox = BlzCreateFrameByType("BACKDROP", "blackbox", BlzGetFrameByName("ConsoleUIBackdrop", 0), "", 0)
+	call BlzFrameSetSize(blackbox, .075, .2)
+	call BlzFrameSetAbsPoint(blackbox, FRAMEPOINT_CENTER, 0.25, 0)
+	call BlzFrameSetTexture(blackbox, "BlackTexture.blp", 0, true)
+endfunction
+
+function InitTrig_Stat_Frame takes nothing returns nothing
+	local trigger trig = CreateTrigger()
+	local integer i = 0
+	set gg_trg_Stat_Frame = CreateTrigger()
+	call BlzEnableUIAutoPosition(false)
+	call BlzHideOriginFrames(true)
+	call BlzFrameSetAllPoints(BlzGetOriginFrame(ORIGIN_FRAME_WORLD_FRAME, 0), BlzGetOriginFrame(ORIGIN_FRAME_GAME_UI, 0))
+	call BlzFrameSetVisible(BlzGetOriginFrame(ORIGIN_FRAME_MINIMAP, 0), true)
+		call BlzFrameClearAllPoints(BlzGetOriginFrame(ORIGIN_FRAME_MINIMAP, 0))
+		call BlzFrameSetSize(BlzGetOriginFrame(ORIGIN_FRAME_MINIMAP, 0), 0.13775, 0.1385)
+		call BlzFrameSetParent(BlzGetOriginFrame(ORIGIN_FRAME_MINIMAP, 0), BlzGetFrameByName("ConsoleUIBackdrop", 0)) 
+	call BlzFrameSetVisible(BlzGetOriginFrame(ORIGIN_FRAME_UBERTOOLTIP, 0), true)
+	call BlzFrameSetVisible(BlzGetOriginFrame(ORIGIN_FRAME_PORTRAIT, 0), true)
+		//call BlzFrameSetSize(BlzGetOriginFrame(ORIGIN_FRAME_PORTRAIT, 0), .04, .04)
+		/*call BlzFrameSetParent(Portrait, BlzGetFrameByName("ConsoleUIBackdrop", 0)) 
+		call BlzFrameClearAllPoints(Portrait)
+		call BlzFrameSetPoint(Portrait, FRAMEPOINT_BOTTOMRIGHT, BlzGetFrameByName("CommandButton_4", 0), FRAMEPOINT_BOTTOMLEFT, -.011773, -.0071939)
+		call BlzFrameSetPoint(Portrait, FRAMEPOINT_BOTTOMLEFT, BlzGetFrameByName("CommandButton_4", 0), FRAMEPOINT_BOTTOMLEFT, -.053073, -.0071939)
+		call BlzFrameSetPoint(Portrait, FRAMEPOINT_TOPRIGHT, BlzGetFrameByName("CommandButton_0", 0), FRAMEPOINT_TOPLEFT, -.011773, -.0071939)
+		call BlzFrameSetPoint(Portrait, FRAMEPOINT_TOPLEFT, BlzGetFrameByName("CommandButton_0", 0), FRAMEPOINT_TOPLEFT, -.053073, -.0071939)
+
+		
+		set px = PORTRAIT_FRAME_POS_X+ResolutionWidth*PORTRAIT_FRAME_ANCHOR_X - BlzFrameGetWidth(DefaultFrame.Portrait)*DPITOPX*PORTRAIT_FRAME_PIVOT_X
+		set py = PORTRAIT_FRAME_POS_Y+ResolutionHeight*PORTRAIT_FRAME_ANCHOR_Y - BlzFrameGetHeight(DefaultFrame.Portrait)*DPITOPX*PORTRAIT_FRAME_PIVOT_Y
+		set pd = ResolutionHeight * .0009259
+		call BlzFrameSetAbsPoint(DefaultFrame.Portrait, FRAMEPOINT_BOTTOMLEFT, GetScreenPosX(px), GetScreenPosY(py))
+		call BlzFrameSetAbsPoint(DefaultFrame.Portrait, FRAMEPOINT_TOPRIGHT, GetScreenPosX(px + pd * 75), GetScreenPosY(py + pd*120))
+
+		*/
+	call BlzFrameSetVisible(BlzFrameGetChild(BlzGetFrameByName("ConsoleUI", 0), 3), true)
+		call BlzFrameSetVisible(BlzGetOriginFrame(ORIGIN_FRAME_SYSTEM_BUTTON, 1), false)
+		call BlzFrameSetVisible(BlzGetOriginFrame(ORIGIN_FRAME_SYSTEM_BUTTON, 2), false)
+		call BlzFrameSetVisible(BlzGetOriginFrame(ORIGIN_FRAME_SYSTEM_BUTTON, 3), false)
+		call BlzFrameClearAllPoints(BlzGetFrameByName("UpperButtonBarMenuButton",0))
+		call BlzFrameSetAbsPoint(BlzGetFrameByName("UpperButtonBarMenuButton",0), FRAMEPOINT_BOTTOMRIGHT, 0.2, 0)
+	//mouse deadzone removal
+	call BlzFrameSetVisible(BlzFrameGetChild(BlzGetFrameByName("ConsoleUI", 0), 5), false) 
+	call BlzFrameSetVisible(BlzGetFrameByName("ORIGIN_FRAME_GAME_UI", 0), false) 
+
+	call BlzLoadTOCFile("war3mapimported\\BoxedText.toc")
+
+    call TriggerRegisterTimerEventSingle( gg_trg_Stat_Frame, 0.00 )
+    call TriggerAddCondition( gg_trg_Stat_Frame, Filter(function InitFrames) )
+	call TriggerAddCondition( gg_trg_Stat_Frame, Filter(function CreateBars) )
+	call TriggerAddCondition( gg_trg_Stat_Frame, Filter(function InitBackdrop) )
+	
+
+	loop
+		exitwhen i == MAX_PLAYERS
+		call TriggerRegisterPlayerSelectionEventBJ(trig, Player(i), true )
+		set i = i+1
+	endloop
+   	call TriggerAddCondition(trig, Filter(function SetFrames))
+endfunction
+
+endlibrary

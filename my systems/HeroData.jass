@@ -1,0 +1,1159 @@
+globals
+    constant real MANA_REGEN_DELAY = 3
+	constant real MANA_REGEN_BASE = 0.875
+	constant real MANA_REGEN_ACCEL = 0.25 //3+25 seconds for regen from 0 to 100
+	constant real HEALTH_REGEN_DELAY = 3 
+	constant real HEALTH_REGEN_BASE = 1.6667 //60 seconds for regen from "0" to 100
+
+    HeroData event_herodata = 0
+    real manaevent = 0.00
+    real spentmana
+    unit spenthero
+	real maxmanaprevcurr
+	real maxmanaprevmax
+	real maxmanaevent = 0.00
+	real maxmanachange
+	unit maxmanahero
+    real leftmousedownevent = -1.00
+    real leftmouseupevent = -1.00
+    real rightmousedownevent = -1.00
+    real rightmouseupevent = -1.00
+    real middlemousedownevent = -1.00
+    real middlemouseupevent = -1.00
+	real hero_damaged_event = -1.00
+	real hero_damaged_amount
+	unit hero_damaged_hero
+    real deference_real_estate = 0.00
+    real event_manacheck = 0.00
+	boolean proc_mana_event = true
+	integer is_someone_fulfilled = 0
+endglobals
+
+struct HeroData extends array
+    implement TimerHead
+    private static constant real SPEED_BONUS = 0.1    //10% action speed bonus
+    private static constant real POWER_BONUS = 0.1    //10% damage bonus
+    private static constant integer BAR_DUMMY = 'h003'
+    private static constant integer INITIALIZE = 1
+    private static constant integer CHECK = 2
+    private static constant integer DESTROY = 3
+    private Timer timer32
+    private static boolexpr t32C
+    private static integer t32I
+    private Timer timer10
+    private static boolexpr t10C
+    private static integer t10I
+    private static integer array id
+	private static constant real MANA_REGEN_BASE_TICK = MANA_REGEN_BASE*0.1
+	private static constant real MANA_REGEN_ACCEL_TICK = MANA_REGEN_ACCEL*0.1
+	private static constant real HEALTH_REGEN_BASE_TICK = HEALTH_REGEN_BASE*0.1
+    private real rspd
+    private real rpow
+    private real rmana
+	private real rhealth
+    private real rsp
+    private static integer c = 1
+	static Table hero_of_player
+	static Table temperament_primary_names
+	static Table temperament_secondary_names
+	static thistype temp_hero_data
+	static Table temperament_initialize
+    static Table temperament_check
+    static Table temperament_destroy
+    static Table temperament_active_icon
+    static Table temperament_passive_icon
+    static Table hitstop_timer_hero
+    real minspd
+    real minpow
+    readonly player owner
+    readonly unit hero
+    readonly unit bar
+    readonly real barZ
+    readonly real armor
+    trigger playermouse
+    trigger mousedowntrig
+    trigger mouseuptrig
+    integer holdstack
+    boolean performing_action
+    boolean charge
+    boolean nodouble
+    Table staticbonus
+    real spow
+    Table optionA
+    Table optionB
+    Table optionC
+	real reserved
+    real mousex
+    real mousey
+    integer queue
+    lightning li
+    boolean leftpress
+    boolean rightpress
+    boolean middlepress
+    real msbonus
+	real percentage_mana
+    Table disabled_skills
+	Table movespeed_mods
+	integer ms_mod_hi
+	integer primary_temperament
+	integer secondary_temperament
+	Item temperament
+	real temperament_fulfilled_time
+	integer deprivation
+	real mp_t
+	real hp_t
+    tooltipfunc deprived_tooltip
+    string tooltip1
+    string tooltip2
+    string hidden_tooltip
+    string fulfillment_percentage1
+    string fulfillment_percentage2
+    real total_damage
+    Table ability_counters
+    Table mana_frames
+    Table item_counters
+    boolean is_moving
+    real prevx
+    real prevy
+    integer hitstop
+    Table busy /*DESTROY ALL THINGS REFERRING TO THIS LATER*/
+    real prev_smart_x
+    real prev_smart_y
+    widget prev_smart_u
+     //boolean temperament_active
+	
+    static method create takes unit u returns thistype
+        local integer h = c
+        local thistype this = c
+        local integer i
+        set c = c+1
+        set h = this
+		set mp_t = 0
+		set hp_t = 0
+        set minspd = 5
+        set minpow = 5
+        set mousex = 0
+        set mousey = 0
+        set holdstack = 0
+        set spow = 0
+        set .owner = GetOwningPlayer(u)
+		set hero_of_player.integer[GetPlayerId(owner)] = this
+        set .hero = u
+        set .rspd = GetHeroStr(u, false)+.001
+        set .rpow = GetHeroAgi(u, false)+.001
+        set .rsp = 0
+        set .nodouble = false
+        set .rmana = GetUnitState(u, UNIT_STATE_MAX_MANA)+.001
+		set rhealth = BlzGetUnitMaxHP(u) + .001
+        set busy = Table.create()
+        call SetUnitUserData(.hero, this) //sets hero's custom value to this struct
+        call ShowUnit(u, false)
+        call UnitAddAbility(u, LOCUST)
+        call UnitRemoveAbility(u, LOCUST)
+        call ShowUnit(u, true)
+        set timer32 = Timer.create(TICK32, t32C, t32I)
+        call add(timer32)
+        set id[timer32] = this
+        set timer10 = Timer.create(0.1, t10C, t10I)
+        call add(timer10)
+        set id[timer10] = this
+		set disabled_skills = Table.create()
+		//set movespeed_mods = Table.create()
+		//set ms_mod_hi = 0
+        set staticbonus = Table.create()
+        set optionA = Table.create()
+        set optionB = Table.create()
+        set optionC = Table.create()
+        set i = 0
+        loop
+            exitwhen i > 3
+            set optionA.integer[i] = 0
+            set optionB.integer[i] = 0
+            set optionC.integer[i] = 0
+            set i = i+1
+        endloop
+        set performing_action = false
+        set playermouse = CreateTrigger()
+        set mousedowntrig = CreateTrigger()
+        set mouseuptrig = CreateTrigger()
+        call TriggerRegisterPlayerEvent(playermouse, owner, EVENT_PLAYER_MOUSE_MOVE)
+        call TriggerAddAction(playermouse, function thistype.mouseupdate)
+        call TriggerRegisterPlayerEvent(mousedowntrig, owner, EVENT_PLAYER_MOUSE_DOWN)
+        call TriggerAddAction(mousedowntrig, function thistype.mousedown)
+        call TriggerRegisterPlayerEvent(mouseuptrig, owner, EVENT_PLAYER_MOUSE_UP)
+        call TriggerAddAction(mouseuptrig, function thistype.mouseup)
+        set leftpress = false
+        set rightpress = false
+        set middlepress = false
+        set li = AddLightningEx("ARRO", false,0,0,0,0,0,0)
+        call SetLightningColor(li,0,0,0,0)
+        set msbonus = 1
+		set primary_temperament = -1
+		set secondary_temperament = -1
+		set temperament_fulfilled_time = 0
+		set percentage_mana = 1
+		set deprivation = 0
+        set tooltip1 = ""
+        set tooltip2 = ""
+        set hidden_tooltip = ""
+        set fulfillment_percentage1 = ""
+        set fulfillment_percentage2 = ""
+        set total_damage = 0
+        set ability_counters = Table.create()
+        set mana_frames = Table.create()
+        set item_counters = Table.create()
+        set i = 0
+        loop
+            exitwhen i == 8
+            set ability_counters.string[i] = null
+            set i = i+1
+        endloop
+        set i = 0
+        loop
+            exitwhen i == 12
+                set mana_frames.boolean[i] = false
+            set i = i+1
+        endloop
+        set i = 0
+        loop
+            exitwhen i == 4
+            set item_counters.string[i] = null
+            set i = i+1
+        endloop
+        set is_moving = false
+        set prevx = GetUnitX(hero)
+        set prevy = GetUnitY(hero)
+        set hitstop_timer_hero = Table.create()
+        set hitstop = 0
+
+
+
+
+        /////////////////////DESTROY THIS LATER
+        set i = 1
+        loop
+            exitwhen i > 7
+            set busy.boolean[i] = false
+            set i = i+1
+        endloop
+
+
+        //set temperament_active = false
+        return this
+    endmethod
+	
+    method setAbilityCounter takes integer i, string s returns nothing
+        set ability_counters.string[i] = s
+        if IsUnitSelected(hero, GetLocalPlayer()) then
+            call BlzFrameSetText(BlzGetFrameByName("AbilityCounterText", i), s)
+        endif
+    endmethod
+
+    method setAbilityCounter2 takes integer i, string s returns nothing
+        set ability_counters.string[i+8] = s
+        if IsUnitSelected(hero, GetLocalPlayer()) then
+            call BlzFrameSetText(BlzGetFrameByName("AbilityCounterText", i+8), s)
+        endif
+    endmethod
+
+    method setAbilityManaVisibility takes integer i, boolean b returns nothing
+        set mana_frames.boolean[i] = b
+        if IsUnitSelected(hero, GetLocalPlayer()) then
+            call BlzFrameSetVisible(mana_overlay[i], b)
+            set mana_frames.boolean[i] = b
+        endif
+    endmethod
+
+    method showManaFrames takes nothing returns nothing
+        local integer i = 0
+        loop
+            exitwhen i == 12
+            call BlzFrameSetVisible(mana_overlay[i], mana_frames.boolean[i])
+            set i = i+1
+        endloop
+    endmethod
+
+    method showAbilityCounters takes nothing returns nothing
+        local integer i = 0
+        loop
+            exitwhen i == 16
+            call BlzFrameSetText(BlzGetFrameByName("AbilityCounterText", i), ability_counters.string[i])
+            set i = i+1
+        endloop
+    endmethod
+
+    static method hideAbilityCounters takes nothing returns nothing
+        local integer i = 0
+        loop
+            exitwhen i == 16
+            call BlzFrameSetText(BlzGetFrameByName("AbilityCounterText", i), "")
+            set i = i+1
+        endloop
+    endmethod
+
+	static method getHeroDataFromPlayer takes player owning_player returns thistype
+		//returns last hero owned by the player
+		//local thistype hd = hero_of_player.integer[GetPlayerId(owning_player)]
+		//call SetUnitVertexColor(hd.hero, 128,255,128,255)
+		return hero_of_player.integer[GetPlayerId(owning_player)]
+	endmethod
+	
+    method updateItem takes nothing returns nothing
+        local string fp
+        if S2R(fulfillment_percentage1) < S2R(fulfillment_percentage2) then
+            set fp = fulfillment_percentage1
+        else
+            set fp = fulfillment_percentage2
+        endif
+        if tooltip2 == "" then
+            set tooltip2 = "."
+        endif
+        
+        if not temperament.is_active then
+            if secondary_temperament != -1 then
+                call BlzSetItemName(temperament.item_widget, temperament_secondary_names.string[secondary_temperament] + temperament_primary_names.string[primary_temperament])
+                call BlzSetItemExtendedTooltip(temperament.item_widget, "Consumes fulfilled time to triple mana regeneration. Fulfill " + fp + tooltip1 + tooltip2)
+            else
+                if deprivation != 1 then
+                    call BlzSetItemName(temperament.item_widget, temperament_primary_names.string[primary_temperament])
+                    call BlzSetItemExtendedTooltip(temperament.item_widget, "Consumes fulfilled time to double mana regeneration. Fulfill " + fp + tooltip1 + tooltip2)
+                else
+                    call BlzSetItemName(temperament.item_widget, temperament_primary_names.string[primary_temperament])
+                    call BlzSetItemExtendedTooltip(temperament.item_widget, tooltip1 + tooltip2)
+                endif
+            endif
+        else
+            if secondary_temperament != -1 then
+                call BlzSetItemName(temperament.item_widget, temperament_secondary_names.string[secondary_temperament] + temperament_primary_names.string[primary_temperament])
+                call BlzSetItemExtendedTooltip(temperament.item_widget, "Cooldown: " + I2S(R2I(temperament.cooldown)) + "|nFulfill " + fp + "%" + tooltip1 + tooltip2)
+            else
+                call BlzSetItemName(temperament.item_widget, temperament_primary_names.string[primary_temperament])
+                call BlzSetItemExtendedTooltip(temperament.item_widget, "Consumes fulfilled time to double mana regeneration. Fulfill " + fp + "%" + tooltip1 + tooltip2)
+            endif
+        endif
+        call temperament.setAbilityNameFromItem()
+        call temperament.setAbilityTooltipFromItem()
+        if not temperament.is_active then
+            set temperament.item_icon = temperament_passive_icon.string[primary_temperament]
+            call BlzSetItemIconPath(temperament.item_widget, temperament_passive_icon.string[primary_temperament])
+        else
+            set temperament.item_icon = temperament_active_icon.string[primary_temperament]
+            call BlzSetItemIconPath(temperament.item_widget, temperament_active_icon.string[primary_temperament])
+        endif
+        set fp = null
+    endmethod
+
+	method addTemperament takes integer research_id returns nothing
+        local temperamentinitialize tempinit
+        local temperamentdestroy tempdestroy
+		//add primary if none existing
+		if primary_temperament == -1 then
+			set primary_temperament = research_id
+			set temperament = Item.create(hero, 'I000')
+			
+            set tempinit = temperament_initialize.integer[primary_temperament]
+            call tempinit.evaluate(this, true)
+            call updateItem()
+		//add secondary if primary selected
+		elseif secondary_temperament == -1 and research_id != primary_temperament then
+			set secondary_temperament = research_id
+			
+            set tempinit = temperament_initialize.integer[secondary_temperament]
+            call tempinit.evaluate(this, false)
+            call updateItem()
+		//toggle secondary if same
+		elseif research_id == secondary_temperament then
+            set tempdestroy = temperament_destroy.integer[secondary_temperament]
+            call tempdestroy.evaluate(this)
+
+            set fulfillment_percentage2 = "100"
+			set secondary_temperament = -1
+			call updateItem()
+		//toggle primary and make secondary new primary if existing
+		elseif research_id == primary_temperament then
+			if secondary_temperament != -1 then
+				//make secondary new primary
+                set tempdestroy = temperament_destroy.integer[primary_temperament]
+                call tempdestroy.evaluate(this)
+                set tempdestroy = temperament_destroy.integer[secondary_temperament]
+                call tempdestroy.evaluate(this)
+
+				set primary_temperament = secondary_temperament
+				set secondary_temperament = -1
+				
+                set tempinit = temperament_initialize.integer[primary_temperament]
+                call tempinit.evaluate(this, true)
+                set fulfillment_percentage2 = "100"
+                call updateItem()
+			else //toggle everything off
+                set tempdestroy = temperament_destroy.integer[primary_temperament]
+                call tempdestroy.evaluate(this)
+				set primary_temperament = -1
+				call temperament.destroy()
+			endif
+		else
+			call BJDebugMsg("too many temperaments!")
+		endif
+	endmethod
+	
+	method disableSkill takes integer spell_id returns nothing
+		set disabled_skills.integer[spell_id] = disabled_skills.integer[spell_id] + 1
+		if disabled_skills.integer[spell_id] == 1 then
+			call BlzUnitDisableAbility(hero, spell_id, true, false)
+		endif
+	endmethod
+	
+	method enableSkill takes integer spell_id returns nothing
+		set disabled_skills.integer[spell_id] = disabled_skills.integer[spell_id] - 1
+		if disabled_skills.integer[spell_id] == 0 then
+			call BlzUnitDisableAbility(hero, spell_id, false, false)
+		endif
+	endmethod
+    
+    private static method mouseupdate takes nothing returns nothing
+		local HeroData hd
+		local thistype this
+		call GroupEnumUnitsSelected(grp, GetTriggerPlayer(), null)
+		set hd = GetUnitUserData(FirstOfGroup(grp))
+		set this = hd
+		if .owner == GetTriggerPlayer() then
+			set .mousex = BlzGetTriggerPlayerMouseX()
+			set .mousey = BlzGetTriggerPlayerMouseY()
+		endif
+		call GroupClear(grp)
+    endmethod
+    
+    private static method mousedown takes nothing returns nothing
+		local HeroData hd
+		local thistype this
+		call GroupEnumUnitsSelected(grp, GetTriggerPlayer(), null)
+		set hd = GetUnitUserData(FirstOfGroup(grp))
+		set this = hd
+		if .owner == GetTriggerPlayer() then
+			if BlzGetTriggerPlayerMouseButton() == MOUSE_BUTTON_TYPE_LEFT then
+				set leftmousedownevent = GetPlayerId(owner)
+				set leftmousedownevent = -1
+				set leftpress = true
+			elseif BlzGetTriggerPlayerMouseButton() == MOUSE_BUTTON_TYPE_RIGHT then
+				set rightmousedownevent = GetPlayerId(owner)
+				set rightmousedownevent = -1
+				set rightpress = true
+			else
+				set middlemousedownevent = GetPlayerId(owner)
+				set middlemousedownevent = -1
+				set middlepress = true
+			endif
+		endif
+		call GroupClear(grp)
+    endmethod
+	
+    
+    private static method mouseup takes nothing returns nothing
+        local HeroData hd
+		local thistype this
+		call GroupEnumUnitsSelected(grp, GetTriggerPlayer(), null)
+		set hd = GetUnitUserData(FirstOfGroup(grp))
+		set this = hd
+		if .owner == GetTriggerPlayer() then
+			if BlzGetTriggerPlayerMouseButton() == MOUSE_BUTTON_TYPE_LEFT then
+				set leftmouseupevent = GetPlayerId(owner)
+				set leftmouseupevent = -1
+				set leftpress = false
+			elseif BlzGetTriggerPlayerMouseButton() == MOUSE_BUTTON_TYPE_RIGHT then
+				set rightmouseupevent = GetPlayerId(owner)
+				set rightmouseupevent = -1
+				set rightpress = false
+			else
+				set middlemouseupevent = GetPlayerId(owner)
+				set middlemouseupevent = -1
+				set middlepress = false
+			endif
+		endif
+		call GroupClear(grp)
+    endmethod
+    
+    method operator x takes nothing returns real
+        return prevx
+    endmethod
+    method operator y takes nothing returns real
+        return prevy
+    endmethod
+    
+    method operator x= takes real newx returns nothing
+        call SetUnitX(.hero, newx)
+    endmethod
+    method operator y= takes real newy returns nothing
+        call SetUnitY(.hero, newy)
+    endmethod
+    
+    method A takes integer skill returns integer
+        return optionA.integer[skill]
+    endmethod
+    method B takes integer skill returns integer
+        return optionB.integer[skill]
+    endmethod
+    method C takes integer skill returns integer
+        return optionC.integer[skill]
+    endmethod
+    
+    method operator mana takes nothing returns real
+        return GetUnitState(.hero, UNIT_STATE_MANA)
+    endmethod
+    method operator maxmana takes nothing returns real
+        return rmana-reserved
+    endmethod
+    method operator mana= takes real newm returns nothing
+        call SetUnitState(.hero, UNIT_STATE_MANA, newm)
+        call updateMana()
+    endmethod
+    method operator maxmana= takes real newm returns nothing
+		local real currm = .mana
+		local real diff = newm - (rmana-reserved)
+		set maxmanaprevmax = GetUnitState(.hero, UNIT_STATE_MAX_MANA)
+        set rmana = rmana + diff
+        call BlzSetUnitMaxMana(hero, R2I(newm))
+		set .mana = currm
+		set maxmanaprevcurr = currm
+		set maxmanachange = diff
+		set maxmanahero = .hero
+		set maxmanaevent = 0.00
+		set maxmanaevent = 1.00
+        call updateMana()
+    endmethod
+	
+	method operator health takes nothing returns real
+        return GetUnitState(.hero, UNIT_STATE_LIFE)-.406
+    endmethod
+    method operator max_health takes nothing returns real
+        return rhealth
+    endmethod
+    method operator health= takes real newhp returns nothing
+        call SetUnitState(.hero, UNIT_STATE_LIFE, newhp+.406)
+        call updateHealth()
+    endmethod
+    method operator max_health= takes real newhp returns nothing
+		local real currhp = health
+		set rhealth = newhp
+        call BlzSetUnitMaxHP(hero, R2I(newhp))
+		set health = currhp
+        call updateHealth()
+    endmethod
+	
+	method reserve takes real r returns boolean
+		local real currm = .mana
+		if maxmana - r < .415 then
+			if GetLocalPlayer()==owner then
+				call StartSound(error)
+			endif
+			return false
+		else
+			set reserved = reserved + r
+			set maxmanaprevmax = GetUnitState(.hero, UNIT_STATE_MAX_MANA)
+			call SetUnitMaxState(.hero, UNIT_STATE_MAX_MANA, rmana-reserved)
+			set .mana = currm
+			set maxmanaprevcurr = currm
+			set maxmanachange = -r
+			set maxmanahero = .hero
+			set maxmanaevent = 0.00
+			set maxmanaevent = 1.00
+			return true
+		endif
+	endmethod
+    
+    method operator special takes nothing returns real
+        return .rsp
+    endmethod
+    method operator special= takes real newsp returns nothing
+        local string s = I2S(R2I(rsp))
+        local integer i = R2I(rsp)
+        set .rsp = newsp
+        if IsUnitSelected(hero, GetLocalPlayer()) then
+            call BlzFrameSetValue(BlzGetFrameByName("BarSp",3), i)
+            call BlzFrameSetText(BlzGetFrameByName("BarText",3), s)
+        endif
+        set s = null
+    endmethod
+    
+    method createBar takes real z, real size returns unit
+        if null != .bar then
+            call RemoveUnit(.bar)
+        endif
+        set .bar = CreateUnit(.owner, BAR_DUMMY, 0, 0, 0)
+        set .barZ = z
+        call SetUnitScale(.bar, size, 0, 0)
+        call SetUnitFlyHeight(.bar, z, 0)
+        call SetUnitTimeScale(.bar, 1000000)
+        call SetUnitColor(.bar, PLAYER_COLOR_LIGHT_GRAY)
+        return .bar
+    endmethod
+    
+    private static method periodic32 takes nothing returns boolean
+        local thistype this = thistype(Timer.expired).first
+        loop
+            set this = id[this]
+            
+            /*if null!=.bar then
+                call SetUnitX(.bar, GetUnitX(.hero))
+                call SetUnitY(.bar, GetUnitY(.hero))
+                call SetUnitFlyHeight(.bar, GetUnitFlyHeight(.hero)+.barZ, 0)
+            endif*/
+            if prevx!=GetUnitX(.hero) or prevy!=GetUnitY(hero) then
+                set is_moving = true
+            else
+                set is_moving = false
+            endif
+            set prevx = GetUnitX(hero)
+            set prevy = GetUnitY(hero)
+
+            set this = Timer(.timer10).next
+            exitwhen this == 0
+        endloop
+        return true
+    endmethod
+    private static method periodic10 takes nothing returns boolean
+        local thistype this = thistype(Timer.expired).first
+        local integer p = 0
+        set deference_real_estate = 0
+        loop
+            set this = id[this]
+            //status updates for each player
+			call evaluateTemperaments()
+			
+			//regen loops, adjust with temperaments and physiques
+			set mp_t = mp_t + 0.1
+			set hp_t = hp_t + 0.1
+			if mana < maxmana-.01 and mp_t > MANA_REGEN_DELAY then
+				if primary_temperament == -1 or temperament_fulfilled_time < 0.1 then
+					if deprivation != 1 then
+						//call BJDebugMsg("normal " + R2S(mp_t))
+						set mana = mana + MANA_REGEN_BASE_TICK + MANA_REGEN_ACCEL_TICK*(mp_t-MANA_REGEN_DELAY)
+					else //primary deprivation with unfulfilled conditions
+						//call BJDebugMsg("deprived")
+						set mana = mana + (MANA_REGEN_BASE_TICK + MANA_REGEN_ACCEL_TICK*(mp_t-MANA_REGEN_DELAY))*0.5
+					endif
+				else //enough accrued time to do things normally
+                    if secondary_temperament != -1 then //2 temperaments
+                        //call BJDebugMsg("two good temps")
+                        set mana = mana + (MANA_REGEN_BASE_TICK + MANA_REGEN_ACCEL_TICK*(mp_t-MANA_REGEN_DELAY))*3
+                    else //1 temperament
+                        //call BJDebugMsg("one good temp")
+                        set mana = mana + (MANA_REGEN_BASE_TICK + MANA_REGEN_ACCEL_TICK*(mp_t-MANA_REGEN_DELAY))*2
+                    endif
+                    set temperament_fulfilled_time = temperament_fulfilled_time - 0.1
+				endif
+			else
+                call updateMana()
+            endif
+            //call BJDebugMsg(R2S(temperament_fulfilled_time))
+            call temperament.setCounter(R2I(temperament_fulfilled_time))
+			if hp_t > HEALTH_REGEN_DELAY then
+				set health = health + HEALTH_REGEN_BASE_TICK
+			endif
+			set percentage_mana = GetUnitState(hero, UNIT_STATE_MANA) / GetUnitState(hero, UNIT_STATE_MAX_MANA)
+
+            call SetUnitMoveSpeed(hero, GetUnitDefaultMoveSpeed(hero)*msbonus)
+            call updateMS()
+            call updateDamage()
+            
+
+            set this = Timer(.timer10).next
+            exitwhen this == 0
+        endloop
+        call Deference.realEstate()
+        return true
+    endmethod
+    method updateMS takes nothing returns nothing
+        local string s
+        if holdstack < 1 then
+            set s = I2S(R2I(GetUnitMoveSpeed(hero)))
+        else
+            set s = "Hold"
+        endif
+        if IsUnitSelected(hero, GetLocalPlayer()) then
+            call BlzFrameSetText(BlzGetFrameByName("SubStatText", 1), s)
+        endif
+        set s = null
+    endmethod
+    method evaluateTemperaments takes nothing returns nothing
+        //checks set the temporary value to some real number indicating the time
+        //as well as changing a boolean so both must be valid when adding up the
+        //time; if both are valid then the lower temporary value is actually set
+        local temperamentcheck tempcheck
+        local real primary_temp_value = 0
+        local real secondary_temp_value = 0
+        if primary_temperament != -1 then
+            set temp_hero_data = this
+           
+            set tempcheck = temperament_check.integer[primary_temperament]
+            set primary_temp_value = tempcheck.evaluate(this)
+            if secondary_temperament != -1 then
+                set tempcheck = temperament_check.integer[secondary_temperament]
+                set secondary_temp_value = tempcheck.evaluate(this)
+                if primary_temp_value < secondary_temp_value then
+                    call BJDebugMsg("primary lesser: " + R2S(primary_temp_value))
+                    set temperament_fulfilled_time = temperament_fulfilled_time + primary_temp_value
+                    set deference_real_estate = deference_real_estate + primary_temp_value
+                else
+                    call BJDebugMsg("secondary lesser: " + R2S(secondary_temp_value))
+                    set temperament_fulfilled_time = temperament_fulfilled_time + secondary_temp_value
+                    set deference_real_estate = deference_real_estate + secondary_temp_value
+                endif
+            else
+                call BJDebugMsg("only primary")
+                set temperament_fulfilled_time = temperament_fulfilled_time + primary_temp_value
+                set deference_real_estate = deference_real_estate + primary_temp_value
+            endif
+        endif
+    endmethod
+    
+    method hold takes boolean b returns nothing
+        if b then
+            if .holdstack == 0 then
+                call BlzUnitDisableAbility(.hero, 'Amov', true, false)
+                call SetUnitPropWindow(.hero, 0)
+            endif
+            set .nodouble = true
+            set .holdstack = .holdstack+1
+            call SetUnitPathing(.hero, false)
+        else 
+            set .holdstack = .holdstack-1
+            if .holdstack == 0 then
+                call BlzUnitDisableAbility(.hero, 'Amov', false, false)
+                call SetUnitPropWindow(.hero, GetUnitDefaultPropWindow(.hero))
+                set .nodouble = false
+                call SetUnitPathing(.hero, true)
+            elseif .holdstack < 0 then
+                call BJDebugMsg("HOLDSTACK NEGATIVE")
+            endif
+        endif
+    endmethod
+    
+    method lockFacing takes real x2, real y2 returns nothing
+        local real x1 = GetUnitX(this.hero)
+        local real y1 = GetUnitY(this.hero)
+        local real a = Atan2(y2-y1, x2-x1)//-10*bj_DEGTORAD
+        local real dx = x1+1000000*Cos(a)
+        local real dy = y1+1000000*Sin(a)
+        call SetUnitLookAt(this.hero, "Bone_Head", this.hero, dx, dy, 0)
+    endmethod
+    
+    method staticPow takes real p, string s returns nothing
+        local integer id = S2I(s)
+        if staticbonus.real.has(id) then
+            call SetUnitBonus(.hero, BONUS_AGILITY, R2I(-staticbonus.real[id]+p))
+        else 
+            call SetUnitBonus(.hero, BONUS_AGILITY, R2I(p))
+        endif
+        set staticbonus.real[id] = p
+        set spow = spow+p
+        if spow > -0.5 and spow < 0.5 then
+            call RemoveUnitBonus(.hero, BONUS_AGILITY)
+        endif
+    endmethod
+    
+    method getSpd takes boolean b returns real
+        if rspd > 5 then
+            return .rspd
+        else
+            return 5.0
+        endif
+    endmethod
+    method getPow takes boolean b returns real
+        if rpow > 5 then
+            return .rpow
+        else
+            return 5.0
+        endif
+    endmethod
+    
+    method operator spd takes nothing returns real
+        if rspd > 5 then
+            return .rspd
+        else
+            return 5.0
+        endif
+    endmethod
+    method operator pow takes nothing returns real
+        if rpow > 5 then
+            return .rpow
+        else
+            return 5.0
+        endif
+    endmethod
+    
+    method operator spd= takes real newspd returns nothing
+        set .rspd = newspd
+        if rspd > 5 then
+            call SetHeroStr(this.hero, R2I(.rspd), TRUE)
+        else
+            call SetHeroStr(this.hero, 5, TRUE)
+        endif
+        call updateSpd()
+    endmethod
+    method operator pow= takes real newpow returns nothing
+        set .rpow = newpow
+        if rpow > 5 then
+            call SetHeroAgi(this.hero, R2I(.rpow), TRUE)
+        else
+            call SetHeroAgi(this.hero, 5, TRUE)
+        endif
+        call updatePow()
+    endmethod
+    
+    method getSpdBonus takes nothing returns real
+        if 0 == hitstop then
+            return (1+((this.getSpd(true)-10)*SPEED_BONUS))
+        else
+            return 0.0
+        endif
+    endmethod
+    method getPowBonus takes nothing returns real
+        return (1+((this.getPow(true)-10)*POWER_BONUS))
+    endmethod
+    
+    method modSpd takes real i returns nothing
+        set .rspd = .rspd+i
+        if .rspd > 5 then
+            call SetHeroStr(this.hero, R2I(.rspd), TRUE)
+        else
+            call SetHeroStr(this.hero, 5, TRUE)
+        endif
+        call updateSpd()
+    endmethod
+    method modPow takes real i returns nothing
+        set .rpow = .rpow+i
+        if .rpow > 5 then
+            call SetHeroAgi(this.hero, R2I(.rpow), TRUE)
+        else
+            call SetHeroAgi(this.hero, 5, TRUE)
+        endif
+        call updatePow()
+    endmethod
+    
+    method modSpdTemp takes real i returns nothing
+        set .rspd = .rspd+i
+        set .minspd = .minspd+i
+        call SetHeroStr(this.hero, R2I(this.rspd), FALSE)
+        
+        call updateSpd()
+    endmethod
+    method modPowTemp takes real i returns nothing
+        set .rpow = .rpow+i
+        set .minpow = .minpow+i
+        call SetHeroAgi(this.hero, R2I(this.rpow), FALSE)
+
+        call updatePow()
+    endmethod
+
+    method updatePow takes nothing returns nothing
+        local string s = I2S(R2I(getPow(false)))
+        if IsUnitSelected(hero, GetLocalPlayer()) then
+            call BlzFrameSetText(BlzGetFrameByName("PowerIconLabel", 0), s)
+        endif
+        set s = null
+    endmethod
+    method updateSpd takes nothing returns nothing
+        local string s = I2S(R2I(getSpd(false)))
+        if IsUnitSelected(hero, GetLocalPlayer()) then
+            call BlzFrameSetText(BlzGetFrameByName("SpeedIconLabel", 0), s)
+        endif
+        set s = null
+    endmethod
+    
+    method damage takes unit u, real d returns real
+        //returns damage dealt
+        local real l = GetWidgetLife(u)
+		
+        if d < l-.406 then
+            call SetWidgetLife(u, l-d)
+
+			set total_damage = total_damage + d
+            return d
+        else
+            call SetWidgetLife(u, .406)
+            if IsUnitEnemy(u, owner) then
+                call EnemyData[u].die()
+            endif
+			set total_damage = total_damage + (l-.406)
+            return l-.406
+        endif
+    endmethod
+
+    method updateDamage takes nothing returns nothing
+        local string s
+        if total_damage > 999 then
+            set s = R2SW(total_damage*.001,1,1) + "k"
+        else
+            set s = I2S(R2I(total_damage))
+        endif
+        if IsUnitSelected(hero, GetLocalPlayer()) then
+            call BlzFrameSetText(BlzGetFrameByName("SubStatText", 0), s)
+        endif
+        set s = null
+    endmethod
+    
+    method manacost takes real c, boolean p returns real
+        local real m = .mana
+        if not p then
+            if c>m then
+                return 0.0
+            else
+                set .mana = m-c
+				if proc_mana_event then
+					set spentmana = c
+					set spenthero = .hero
+					set manaevent = 0.00
+					set manaevent = 1.00
+					if c > 0 then
+						set mp_t = 0
+					endif
+				else
+					set proc_mana_event = true
+				endif
+				set percentage_mana = GetUnitState(hero, UNIT_STATE_MANA) / GetUnitState(hero, UNIT_STATE_MAX_MANA)
+                return c
+            endif
+        else
+            set .mana = m*(1-c)
+			if proc_mana_event then
+				set spentmana = m*c
+				set spenthero = .hero
+				set manaevent = 0.00
+				set manaevent = 1.00
+				if c > 0 then
+					set mp_t = 0
+				endif
+			else
+				set proc_mana_event = true
+			endif
+			set percentage_mana = GetUnitManaPercent(hero)*.01
+            return m*c
+        endif
+    endmethod
+
+    method updateMana takes nothing returns nothing
+        local string s = I2S(R2I(GetUnitState(hero, UNIT_STATE_MANA)))+"/"+I2S(R2I(GetUnitState(hero, UNIT_STATE_MAX_MANA)))
+        local real r = GetUnitManaPercent(hero)
+        if IsUnitSelected(hero, GetLocalPlayer()) then
+            call BlzFrameSetValue(BlzGetFrameByName("Bar",2), r)
+            call BlzFrameSetText(BlzGetFrameByName("BarText",2), s)
+        endif
+        set event_herodata = this
+        set event_manacheck = 0.00
+        set event_manacheck = 1.00
+        set s = null
+    endmethod
+
+    method updateHealth takes nothing returns nothing
+        local string s = I2S(R2I(GetWidgetLife(hero)))+"/"+I2S(R2I(GetUnitState(hero, UNIT_STATE_MAX_LIFE)))
+        local real r = GetUnitLifePercent(hero)
+        if IsUnitSelected(hero, GetLocalPlayer()) then
+            call BlzFrameSetValue(BlzGetFrameByName("Bar",1), r)
+            call BlzFrameSetText(BlzGetFrameByName("BarText",1), s)
+        endif
+        set s = null
+    endmethod
+	
+	/*static method damageTaken takes nothing returns nothing
+		local thistype this = GetUnitUserData(hero_damaged_hero)
+		if this != 0 then
+			set hp_t = 0
+		endif
+	endmethod*/
+
+    method takeDamage takes real d, boolean proc returns real
+        local real hp = .health
+        set hp_t = 0
+        if d > hp then
+            set .health = 0
+            if proc and hp > 0 then
+            	set hero_damaged_event = 1.00
+                set hero_damaged_event = 0.00
+                set hero_damaged_amount = hp
+                set hero_damaged_hero = hero
+            endif
+            return hp
+        else
+            set .health = hp - d
+            if proc then
+            	set hero_damaged_event = 1.00
+                set hero_damaged_event = 0.00
+                set hero_damaged_amount = d
+                set hero_damaged_hero = hero
+            endif
+            return d
+        endif
+    endmethod
+
+    method hitStop takes real d returns nothing
+        local timer hstimer = CreateTimer()
+        call TimerStart(hstimer, d, false, function thistype.hitStopEnd)
+        set hitstop_timer_hero.integer[GetHandleId(hstimer)] = this
+        set hitstop = hitstop+1
+        set hstimer = null
+    endmethod
+    
+    static method hitStopEnd takes nothing returns nothing
+        local thistype this = hitstop_timer_hero.integer[GetHandleId(GetExpiredTimer())]
+        set hitstop = hitstop-1
+    endmethod
+
+    method orderStop takes nothing returns nothing
+        call IssueImmediateOrderById(hero, ORDER_STOP)
+    endmethod
+
+    method isAlive takes nothing returns boolean
+        if health > 0 then
+            return true
+        else
+            return false
+        endif
+    endmethod
+
+    method resendSmartOrder takes nothing returns boolean
+        if is_moving then
+            if null==prev_smart_u then
+                call IssuePointOrderById(hero, ORDER_SMART, prev_smart_x, prev_smart_y)
+            else
+                call IssueTargetOrderById(hero, ORDER_SMART, prev_smart_u)
+            endif
+            return true
+        else
+            call orderStop()
+            return false
+        endif
+    endmethod
+
+    static method setPreviousSmartOrder takes nothing returns nothing
+        local thistype this = GetUnitUserData(GetTriggerUnit())
+        if 0!=this and GetIssuedOrderId() == ORDER_SMART then
+            set prev_smart_u = GetOrderTarget()
+            if null==prev_smart_u then
+                set prev_smart_x = GetOrderPointX()
+                set prev_smart_y = GetOrderPointY()
+            endif
+        endif
+    endmethod
+        
+
+    static method onInit takes nothing returns nothing
+        call RegisterPlayerUnitEvent(EVENT_PLAYER_UNIT_ISSUED_POINT_ORDER, function thistype.setPreviousSmartOrder)
+        call RegisterPlayerUnitEvent(EVENT_PLAYER_UNIT_ISSUED_TARGET_ORDER, function thistype.setPreviousSmartOrder)
+        call RegisterPlayerUnitEvent(EVENT_PLAYER_UNIT_ISSUED_UNIT_ORDER, function thistype.setPreviousSmartOrder)
+        set t32C = Condition(function thistype.periodic32)
+        set t32I = thistype.periodic32
+        set t10C = Condition(function thistype.periodic10)
+        set t10I = thistype.periodic10
+		//////////////////////////////////////////////call CreateRealEventTrigger.execute("hero_damaged_event", 1.00, function thistype.damageTaken)
+		set hero_of_player = Table.create()
+		set temperament_primary_names = Table.create()
+		set temperament_secondary_names = Table.create()
+        set temperament_active_icon = Table.create()
+        set temperament_passive_icon = Table.create()
+        set temperament_initialize = Table.create()
+        set temperament_check = Table.create()
+        set temperament_destroy = Table.create()
+        //mamma mia here we fucking go
+		set temperament_primary_names.string['R000'] = "Diligence"
+		set temperament_primary_names.string['R001'] = "Direction"
+		set temperament_primary_names.string['R002'] = "Deliberation"
+		set temperament_primary_names.string['R003'] = "Destruction"
+		set temperament_primary_names.string['R004'] = "Dependence"
+		set temperament_primary_names.string['R005'] = "Divergence"
+		set temperament_primary_names.string['R006'] = "Depravity"
+		set temperament_primary_names.string['R007'] = "Daring"
+		set temperament_primary_names.string['R008'] = "Discipline"
+		set temperament_primary_names.string['R009'] = "Desperation"
+		set temperament_primary_names.string['R00A'] = "Deference"
+		set temperament_primary_names.string['R00B'] = "Deprivation"
+		set temperament_secondary_names.string['R000'] = "Diligent " //don't forget the spaces
+		set temperament_secondary_names.string['R001'] = "Directed "
+		set temperament_secondary_names.string['R002'] = "Deliberate "
+		set temperament_secondary_names.string['R003'] = "Destructive "
+		set temperament_secondary_names.string['R004'] = "Dependent "
+		set temperament_secondary_names.string['R005'] = "Divergent "
+		set temperament_secondary_names.string['R006'] = "Depraved "
+		set temperament_secondary_names.string['R007'] = "Daring "
+		set temperament_secondary_names.string['R008'] = "Disciplined "
+		set temperament_secondary_names.string['R009'] = "Desperate "
+		set temperament_secondary_names.string['R00A'] = "Deferencial "
+		set temperament_secondary_names.string['R00B'] = "Deprived "
+        set temperament_active_icon.string['R000'] = "ReplaceableTextures\\CommandButtons\\BTNDiligence.blp"
+        set temperament_active_icon.string['R001'] = "ReplaceableTextures\\CommandButtons\\BTNDirection.blp"
+        set temperament_active_icon.string['R002'] = "ReplaceableTextures\\CommandButtons\\BTNDeliberation.blp"
+        set temperament_active_icon.string['R003'] = "ReplaceableTextures\\CommandButtons\\BTNDestruction.blp"
+        set temperament_active_icon.string['R004'] = "ReplaceableTextures\\CommandButtons\\BTNDependence.blp"
+        set temperament_active_icon.string['R005'] = "ReplaceableTextures\\CommandButtons\\BTNDivergence.blp"
+        set temperament_active_icon.string['R006'] = "ReplaceableTextures\\CommandButtons\\BTNDepravity.blp"
+        set temperament_active_icon.string['R007'] = "ReplaceableTextures\\CommandButtons\\BTNDaring.blp"
+        set temperament_active_icon.string['R008'] = "ReplaceableTextures\\CommandButtons\\BTNDiscipline.blp"
+        set temperament_active_icon.string['R009'] = "ReplaceableTextures\\CommandButtons\\BTNDesperation.blp"
+        set temperament_active_icon.string['R00A'] = "ReplaceableTextures\\CommandButtons\\BTNDeference.blp"
+        set temperament_active_icon.string['R00B'] = "ReplaceableTextures\\CommandButtons\\BTNDeprivation.blp"
+        set temperament_passive_icon.string['R000'] = "ReplaceableTextures\\CommandButtons\\BTNPassiveDiligence.blp"
+        set temperament_passive_icon.string['R001'] = "ReplaceableTextures\\CommandButtons\\BTNPassiveDirection.blp"
+        set temperament_passive_icon.string['R002'] = "ReplaceableTextures\\CommandButtons\\BTNPassiveDeliberation.blp"
+        set temperament_passive_icon.string['R003'] = "ReplaceableTextures\\CommandButtons\\BTNPassiveDestruction.blp"
+        set temperament_passive_icon.string['R004'] = "ReplaceableTextures\\CommandButtons\\BTNPassiveDependence.blp"
+        set temperament_passive_icon.string['R005'] = "ReplaceableTextures\\CommandButtons\\BTNPassiveDivergence.blp"
+        set temperament_passive_icon.string['R006'] = "ReplaceableTextures\\CommandButtons\\BTNPassiveDepravity.blp"
+        set temperament_passive_icon.string['R007'] = "ReplaceableTextures\\CommandButtons\\BTNPassiveDaring.blp"
+        set temperament_passive_icon.string['R008'] = "ReplaceableTextures\\CommandButtons\\BTNPassiveDiscipline.blp"
+        set temperament_passive_icon.string['R009'] = "ReplaceableTextures\\CommandButtons\\BTNPassiveDesperation.blp"
+        set temperament_passive_icon.string['R00A'] = "ReplaceableTextures\\CommandButtons\\BTNPassiveDeference.blp"
+        set temperament_passive_icon.string['R00B'] = "ReplaceableTextures\\CommandButtons\\BTNPassiveDeprivation.blp"
+        
+		set temperament_initialize.integer['R000'] = Diligence.initialize
+        set temperament_check.integer['R000'] = Diligence.check
+        set temperament_destroy.integer['R000'] = Diligence.callDestroy
+
+        set temperament_initialize.integer['R001'] = Direction.initialize
+        set temperament_check.integer['R001'] = Direction.check
+        set temperament_destroy.integer['R001'] = Direction.callDestroy
+        
+        set temperament_initialize.integer['R002'] = Deliberation.initialize
+        set temperament_check.integer['R002'] = Deliberation.check
+        set temperament_destroy.integer['R002'] = Deliberation.callDestroy
+
+        set temperament_initialize.integer['R003'] = Destruction.initialize
+        set temperament_check.integer['R003'] = Destruction.check
+        set temperament_destroy.integer['R003'] = Destruction.callDestroy
+
+        set temperament_initialize.integer['R004'] = Dependence.initialize
+        set temperament_check.integer['R004'] = Dependence.check
+        set temperament_destroy.integer['R004'] = Dependence.callDestroy
+
+        set temperament_initialize.integer['R005'] = Divergence.initialize
+        set temperament_check.integer['R005'] = Divergence.check
+        set temperament_destroy.integer['R005'] = Divergence.callDestroy
+
+        set temperament_initialize.integer['R006'] = Depravity.initialize
+        set temperament_check.integer['R006'] = Depravity.check
+        set temperament_destroy.integer['R006'] = Depravity.callDestroy
+
+        set temperament_initialize.integer['R007'] = Daring.initialize
+        set temperament_check.integer['R007'] = Daring.check
+        set temperament_destroy.integer['R007'] = Daring.callDestroy
+
+        set temperament_initialize.integer['R008'] = Discipline.initialize
+        set temperament_check.integer['R008'] = Discipline.check
+        set temperament_destroy.integer['R008'] = Discipline.callDestroy
+
+        set temperament_initialize.integer['R009'] = Desperation.initialize
+        set temperament_check.integer['R009'] = Desperation.check
+        set temperament_destroy.integer['R009'] = Desperation.callDestroy
+
+        set temperament_initialize.integer['R00A'] = Deference.initialize
+        set temperament_check.integer['R00A'] = Deference.check
+        set temperament_destroy.integer['R00A'] = Deference.callDestroy
+
+        set temperament_initialize.integer['R00B'] = Deprivation.initialize
+        set temperament_check.integer['R00B'] =  Deprivation.check
+        set temperament_destroy.integer['R00B'] = Deprivation.callDestroy
+    endmethod
+endstruct
+
+function interface temperamentinitialize takes HeroData this, boolean isprimary returns nothing
+function interface temperamentcheck takes HeroData this returns real
+function interface temperamentdestroy takes HeroData this returns nothing
+function interface tooltipfunc takes HeroData this returns nothing

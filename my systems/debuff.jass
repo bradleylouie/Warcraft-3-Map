@@ -1,0 +1,291 @@
+struct Debuff
+    implement TimerHead
+    private Timer timer
+    private static boolexpr onExpireC
+    private static integer onExpireI
+    private static group swap = CreateGroup()
+	private static group swap2 = CreateGroup()
+	private static group swap3 = CreateGroup()
+	private static group swap4 = CreateGroup()
+    private static group swap5 = CreateGroup()
+    static Table stun_duration
+    static Table tint_duration
+	static TableArray slow_duration
+	static Table slow_hi
+	static TableArray slow_amount
+	static Table root_duration
+    static Table hitstun_duration
+    static Table hitstun_freeze_t
+    static Table hitstun_passed_t
+    static Table hitstun_recovery
+    static Table hitstun_aggro
+    static group stun_group
+    static group tint_group
+	static group slow_group
+	static group root_group
+    static group hitstun_group
+
+    private static method onInit takes nothing returns nothing
+		local thistype this = allocate()
+        set onExpireC = Condition(function thistype.onExpire)
+        set onExpireI = onExpire
+        set timer = Timer.create(TICK32, onExpireC, onExpireI)
+        call add(timer)
+        set stun_duration = Table.create()
+        set tint_duration = Table.create()
+		set slow_amount = TableArray[32]
+		set slow_duration = TableArray[32]
+		set slow_hi = Table.create()
+        set hitstun_duration = Table.create()
+        set hitstun_passed_t = Table.create()
+        set hitstun_recovery = Table.create()
+        set hitstun_aggro = Table.create()
+        set hitstun_freeze_t = Table.create()
+        set stun_group = CreateGroup()
+        set tint_group = CreateGroup()
+		set slow_group = CreateGroup()
+		set root_group = CreateGroup()
+        set hitstun_group = CreateGroup()
+    endmethod
+    
+    public static method tint takes unit u, real d, integer r, integer g, integer b, playercolor c returns nothing
+        local integer id = GetHandleId(u)
+        call SetUnitVertexColor(u, r, g, b, 255)
+        if null!=c then
+            call SetUnitColor(u, c)
+        endif
+        set .tint_duration.real[id] = d
+        if not IsUnitInGroup(u, tint_group) then
+            call GroupAddUnit(tint_group, u)
+        endif
+    endmethod
+
+    public static method hitstun takes unit u, real d, boolean aggro, unit target returns nothing
+        local integer id = GetHandleId(u)
+        local real a
+        if not IsUnitInGroup(u, hitstun_group) then
+            set .hitstun_duration.real[id] = d
+            set .hitstun_freeze_t.real[id] = 0
+            call GroupAddUnit(hitstun_group, u)
+            call PauseUnit(u, true)
+            call SetUnitAnimation(u, "stand hit")
+            call QueueUnitAnimation(u, "stand ready")
+            set hitstun_passed_t.real[id] = 0
+            set hitstun_recovery.boolean[id] = false
+            call SetUnitTimeScale(u, 10)
+        elseif .hitstun_duration.real[id]-hitstun_passed_t.real[id] < d then
+            set .hitstun_duration.real[id] = d
+            set .hitstun_freeze_t.real[id] = 0
+            call SetUnitAnimation(u, "stand hit")
+            call QueueUnitAnimation(u, "stand ready")
+            set hitstun_passed_t.real[id] = 0
+            set hitstun_recovery.boolean[id] = false
+            call SetUnitTimeScale(u, 10)
+        endif
+        
+        if aggro then
+            set hitstun_aggro.unit[id] = target
+            set a = Atan2(GetUnitY(target)-GetUnitY(u), GetUnitX(target)-GetUnitX(u))
+            call SetUnitLookAt(u, "bone_head", u, GetUnitX(u) + 1000000*Cos(a), GetUnitY(u) + 1000000*Sin(a),0)
+            //call SetUnitLookAt(u, "bone_head", target, 0,0,0)
+            call SetUnitFacing(u, a*bj_RADTODEG)
+        endif
+    endmethod
+    
+    public static method hitstunFreeze takes unit u, real d returns nothing
+        local integer id = GetHandleId(u)
+        if .hitstun_freeze_t.real[id] == 0 then
+            set .hitstun_freeze_t.real[id] = d * GetRandomReal(0.9, 1.1)
+        endif
+    endmethod
+    
+    public static method stun takes unit u, real d returns nothing
+        local integer id = GetHandleId(u)
+        if not IsUnitInGroup(u, stun_group) then
+            set .stun_duration.real[id] = d
+            call GroupAddUnit(stun_group, u)
+            call PauseUnit(u, true)
+            call SetUnitTimeScale(u, 0)
+        elseif .stun_duration.real[id] < d then
+            set .stun_duration.real[id] = d
+        endif
+    endmethod
+	
+	public static method slow takes unit u, real d, real t returns nothing
+        local integer id = GetHandleId(u)
+        if not IsUnitInGroup(u, slow_group) then
+            set slow_hi.integer[id] = 0
+			call GroupAddUnit(slow_group, u)
+		else
+			set slow_hi.integer[id] = slow_hi.integer[id]+1
+		endif
+		set slow_amount[slow_hi.integer[id]].real[id] = d
+		call SetUnitMoveSpeed(u, GetUnitMoveSpeed(u)*(1-d))
+		set slow_duration[slow_hi.integer[id]].real[id] = t
+    endmethod
+	
+	public static method root takes unit u, real d returns nothing
+        local integer id = GetHandleId(u)
+        if not IsUnitInGroup(u, root_group) then
+            set .root_duration.real[id] = d
+            call GroupAddUnit(root_group, u)
+            call SetUnitPropWindow(u, 0)
+        elseif .root_duration.real[id] < d then
+            set .root_duration.real[id] = d
+        endif
+    endmethod
+
+    private static method onExpire takes nothing returns boolean
+        local thistype this = thistype(Timer.expired).first
+        local integer id
+        local unit fog
+		local integer i
+		local real base_speed
+        loop
+            loop
+                set fog = FirstOfGroup(.stun_group)
+                exitwhen null==fog
+                set id = GetHandleId(fog)
+                
+                if not (.stun_duration.real[id] > 0)  then
+                    if not IsUnitInGroup(fog, hitstun_group) then
+                        call PauseUnit(fog, false)
+                        call SetUnitTimeScale(fog, 1)
+                    endif
+                else
+                    call GroupAddUnit(swap, fog)
+                endif
+                set .stun_duration.real[id] = .stun_duration.real[id]-TICK32
+                call GroupRemoveUnit(.stun_group, fog)
+            endloop
+            set temp = .stun_group
+            set .stun_group = swap
+            set swap = temp
+            
+            loop
+                set fog = FirstOfGroup(.tint_group)
+                exitwhen null==fog
+                set id = GetHandleId(fog)
+                if .tint_duration.real[id] <= 0 then
+                    call SetUnitVertexColor(fog, 255, 255, 255, 255)
+                    call SetUnitColor(fog, GetPlayerColor(GetOwningPlayer(fog)))
+                else
+                    call GroupAddUnit(swap2, fog)
+                endif
+                set .tint_duration.real[id] = .tint_duration.real[id]-TICK32
+                call GroupRemoveUnit(.tint_group, fog)
+            endloop
+            set temp = .tint_group
+            set .tint_group = swap2
+            set swap2 = temp
+			
+			loop
+                set fog = FirstOfGroup(.slow_group)
+                exitwhen null==fog
+                set id = GetHandleId(fog)
+				
+				set base_speed = GetUnitDefaultMoveSpeed(fog)
+				
+				//iterate each slow multiplicatively
+				set i = 0
+				loop
+					exitwhen i > slow_hi.integer[id]
+					if not (.slow_duration[i].real[id] < TICK32) and EnemyData[fog].is_alive then
+						set .slow_duration[i].real[id] = .slow_duration[i].real[id]-TICK32
+						call SetUnitMoveSpeed(fog, base_speed*(1-.slow_amount[i].real[id]))
+					else
+						call SlowSplice(id, i)
+                        set i = i-1
+					endif
+					set i = i+1
+				endloop
+				
+				if i > 0 then 
+					call GroupAddUnit(swap3, fog)
+				else
+					call SetUnitMoveSpeed(fog, base_speed)
+				endif
+                call GroupRemoveUnit(.slow_group, fog)
+            endloop
+            set temp = .slow_group
+            set .slow_group = swap3
+            set swap3 = temp
+			
+			loop
+                set fog = FirstOfGroup(.root_group)
+                exitwhen null==fog
+                set id = GetHandleId(fog)
+                if .root_duration.real[id] <= 0 then
+                    call SetUnitPropWindow(fog, GetUnitDefaultPropWindow(fog))
+                else
+                    call GroupAddUnit(swap4, fog)
+                endif
+                set .root_duration.real[id] = .root_duration.real[id]-TICK32
+                call GroupRemoveUnit(.root_group, fog)
+            endloop
+            set temp = .root_group
+            set .root_group = swap4
+            set swap4 = temp
+
+            loop
+                set fog = FirstOfGroup(.hitstun_group)
+                exitwhen null==fog
+                set id = GetHandleId(fog)
+
+                set .hitstun_passed_t.real[id] = .hitstun_passed_t.real[id]+TICK32
+                if not hitstun_recovery.boolean[id] then
+                    if hitstun_passed_t.real[id] > .125 then
+                        if hitstun_passed_t.real[id] > .125+hitstun_freeze_t.real[id] then
+                            call SetUnitTimeScale(fog, 1.25/(.hitstun_duration.real[id]-.hitstun_freeze_t.real[id]))
+                            //call BJDebugMsg(R2S(.125*(1/.hitstun_duration.real[id])))
+                            set hitstun_recovery.boolean[id] = true
+                            call ResetUnitLookAt(fog)
+                        else
+                            call SetUnitTimeScale(fog, 0)
+                        endif
+                    endif
+                endif
+
+                if not (hitstun_passed_t.real[id] < .hitstun_duration.real[id]) then
+                    if not IsUnitInGroup(fog, stun_group) then
+                        call PauseUnit(fog, false)
+                        if EnemyData[fog].is_alive then
+                            call SetUnitAnimation(fog, "stand ready")
+                        endif
+                        call SetUnitTimeScale(fog, 1)
+                        set .hitstun_freeze_t.real[id] = 0
+                        set .hitstun_duration.real[id] = 0
+                        if null!=hitstun_aggro.unit[id] then
+                            call IssueTargetOrder(fog, "attack", hitstun_aggro.unit[id])
+                        endif
+                    endif
+                else
+                    call GroupAddUnit(swap5, fog)
+                endif
+
+                call GroupRemoveUnit(.hitstun_group, fog)
+            endloop
+            set temp = .hitstun_group
+            set .hitstun_group = swap5
+            set swap5 = temp
+            
+            set this = Timer(this).next
+            exitwhen this == 0
+        endloop
+        return false
+    endmethod
+	
+	private method SlowSplice takes integer id, integer i returns nothing
+		local integer k = i
+		set slow_hi.integer[id] = slow_hi.integer[id]-1
+		loop
+			exitwhen k >= slow_hi.integer[id]
+			set slow_duration[k].real[id] = slow_duration[k+1].real[id]
+			set slow_amount[k].real[id] = slow_duration[k+1].real[id]
+			set k = k+1
+		endloop
+	endmethod
+
+    //in a module
+    
+endstruct

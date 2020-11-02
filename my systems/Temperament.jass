@@ -1,0 +1,4 @@
+struct Temperament extends array
+    static string ACTIVE_ICON_PATH
+    static string PASSIVE_ICON_PATH
+endstruct

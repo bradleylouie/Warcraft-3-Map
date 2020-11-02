@@ -1,0 +1,110 @@
+struct Recycler extends array
+    private Timer timer
+    static Table tb
+    static integer sc = 1
+    
+    group grp
+    integer id
+    unit fog
+    boolean d
+    
+    static method create takes integer id, boolean isdummy returns thistype
+        local thistype this = sc
+        if sc == 1 then
+            set tb = Table.create()
+        endif
+        set .id = id
+        set .grp = CreateGroup()
+        set tb.integer[id] = this
+        set sc = sc+1
+        set d = isdummy
+        return this
+    endmethod
+    
+    static method operator [] takes integer id returns thistype
+        return tb.integer[id]
+    endmethod
+    
+    static method recycle takes unit u returns nothing
+        call ShowUnit(u, false)
+        call GroupAddUnit(thistype[GetUnitTypeId(u)].grp, u)
+        //assumes struct has been created for this unit type
+    endmethod
+    
+    method makeEnemy takes player p, real x, real y, real f returns unit
+        local unit u
+        set .fog = FirstOfGroup(.grp)
+        
+        if null==.fog then
+            set u = CreateUnit(p, .id, x, y, f)
+            return u
+        else
+            call BJDebugMsg("old: " + I2S(GetHandleId(.fog)))
+            call ShowUnit(.fog, true)
+            call UnitRemoveAbility(.fog, 'Aloc')
+            call SetUnitOwner(.fog, p, false)
+            call SetUnitX(.fog, x)
+            call SetUnitY(.fog, y)
+            call SetUnitFacing(.fog, f)
+            call GroupRemoveUnit(.grp, .fog)
+            return .fog
+        endif
+    endmethod
+    
+    method make takes real x, real y returns unit
+        local unit u
+        set .fog = FirstOfGroup(.grp)
+        
+        if null==.fog then
+            set u = CreateUnit(Player(0), .id, x, y, 0)
+			call SetUnitAnimationByIndex(u, 90)
+            call SetUnitX(u, x)
+            call SetUnitY(u, y)
+            return u
+        endif
+        call ShowUnit(.fog, true)
+        if d then
+            if GetUnitTypeId(.fog) == DUMMY then
+                call SetUnitAnimationByIndex(.fog, 90)
+                call SetUnitScale(.fog, 1, 1, 1)
+                call ResetUnitLookAt(.fog)
+            endif
+            call UnitRemoveAbility(.fog, LOCUST)
+            call UnitAddAbility(.fog, LOCUST)
+            call SetUnitFlyHeight(.fog, 0, 0)
+        endif
+        call SetUnitX(.fog, x)
+        call SetUnitY(.fog, y)
+        call GroupRemoveUnit(.grp, .fog)
+        return .fog
+    endmethod
+    
+    method makeFacing takes real x, real y, real f returns unit
+        set .fog = null
+        set .fog = FirstOfGroup(.grp)
+        if null==.fog then
+            return CreateUnit(Player(0), .id, x, y, f)
+        endif
+        call ShowUnit(.fog, true)
+        call SetUnitX(.fog, x)
+        call SetUnitY(.fog, y)
+        call SetUnitLookAt(.fog, "head", .fog, x+1000000*Cos(f), y+1000000*Sin(f), 0)
+        call GroupRemoveUnit(.grp, .fog)
+        return .fog
+    endmethod
+    
+    method flush takes nothing returns nothing
+        set .fog = null
+        loop
+            set .fog = FirstOfGroup(.grp)
+            exitwhen null==.fog
+            call GroupRemoveUnit(.grp, .fog)
+            call RemoveUnit(.fog)
+            set .fog = null
+        endloop
+    endmethod
+    
+    private static method onInit takes nothing returns nothing
+        call thistype.create(DUMMY, true)
+    endmethod
+endstruct
