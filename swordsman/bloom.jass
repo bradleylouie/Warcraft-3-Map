@@ -1,0 +1,383 @@
+library SwordsmanBloom uses SpellEffectEvent
+
+globals
+    //private constant integer SPELLID = 'A036'
+	private constant string DORMANT_FX = "lotusdormant.mdx"
+	private constant string BLOOM_FX1 = "lotuspulse.mdx"
+	private constant string BLOOM_FX2 = "bloomburn.mdx"
+	private constant real DORMANT_TIME = 7
+	private constant real BLOOM_TIME = 7
+	private constant real DAMAGE_PER_SEC = 5
+	private constant string LOTUS_FX1 = "lotus.mdx"
+	private constant string LOTUS_FX2 = "lotusaura.mdx"
+	private constant real FIELD_BASE_RADIUS = 125 
+	private constant real FIELD_EXPANDED_RADIUS = 190 
+	private constant real FIELD_DURATION = 25 //also max duration attainable
+	private constant real DEATH_BONUS_DURATION = 10
+	private constant real FIELD_FADEOUT = 10
+endglobals
+
+struct Bloom extends array
+    implement TimerHead
+    private Timer timer
+    private static boolexpr expireC
+    private static integer expireI
+	private static integer ticks_per_dmg = 3
+	private static constant real DAMAGE_TICK = DAMAGE_PER_SEC*TICK32
+	private static constant real BASE_SQUARED = FIELD_BASE_RADIUS*FIELD_BASE_RADIUS
+	private static constant real EXPANDED_SQUARED = FIELD_EXPANDED_RADIUS*FIELD_EXPANDED_RADIUS
+	private static constant real WMD_COMPARISON = (FIELD_EXPANDED_RADIUS - FIELD_BASE_RADIUS)*(FIELD_EXPANDED_RADIUS - FIELD_BASE_RADIUS)
+	private static thistype array bloom_array[12]
+	private static integer bloom_index = 0
+    private HeroData h
+	group affected_units
+	private static group swap = CreateGroup()
+	Table lotus
+	Table burn
+	Table dormant
+	Table countdown
+	Table field_flower
+	Table has_flower
+	Table field_aura
+	Table field_splat
+	Table field_time
+	Table field_x
+	Table field_y
+	Table field_expanded
+	Table dont_create_field
+	Table field_alpha
+    integer fx_hi
+	boolean is_in_field
+	trigger enemydeath
+	integer occupied_field
+	Table tick_count
+	
+    public static method initialize takes thistype this returns nothing
+        set .h = this
+		set bloom_array[bloom_index] = this
+		set bloom_index = bloom_index+1
+        set .timer = Timer.create(TICK32, expireC, expireI)
+        call add(.timer)
+        set id[.timer] = this
+		set affected_units = CreateGroup()
+		set lotus = Table.create()
+		set burn = Table.create()
+		set dormant = Table.create()
+		set countdown = Table.create()
+		set field_flower = Table.create()
+		set field_aura = Table.create()
+		set has_flower = Table.create()
+		set field_splat = Table.create()
+		set field_time = Table.create()
+		set field_x = Table.create()
+		set field_y = Table.create()
+		set field_expanded = Table.create()
+		set dont_create_field = Table.create()
+		set field_alpha = Table.create()
+		set fx_hi = 0
+		set is_in_field = false
+		set tick_count = Table.create()
+		
+		set enemydeath = CreateTrigger()
+		call TriggerRegisterPlayerUnitEvent(enemydeath, Player(10), EVENT_PLAYER_UNIT_DEATH, null)
+		call TriggerRegisterPlayerUnitEvent(enemydeath, Player(11), EVENT_PLAYER_UNIT_DEATH, null)
+		call TriggerRegisterPlayerUnitEvent(enemydeath, Player(12), EVENT_PLAYER_UNIT_DEATH, null)
+		call TriggerAddAction(enemydeath, function thistype.deathevent)
+    endmethod
+    
+    private static method expire takes nothing returns boolean
+        local thistype this = thistype(Timer.expired).first
+		local unit fog
+		local integer fog_id
+		local boolean close_to_another_flower
+		local integer i
+		local real x1
+		local real y1
+		local real x2
+		local real y2
+		local integer alpha
+		local boolean nearby
+		local real distance
+        loop
+            set this = id[this]
+			set ticks_per_dmg = 3+R2I(BlzGroupGetSize(affected_units)/75)
+
+			loop
+				set fog = FirstOfGroup(affected_units)
+				exitwhen null==fog
+				set fog_id = GetHandleId(fog)
+				if EnemyData[fog].is_alive then
+				
+					if dormant.boolean[fog_id] then
+						set countdown.real[fog_id] = countdown.real[fog_id] - TICK32
+						if countdown.real[fog_id] < TICK32 then
+							set dormant.boolean[fog_id] = false
+							call BlzSetSpecialEffectAlpha(lotus.effect[fog_id], 0)
+							call DestroyEffect(lotus.effect[fog_id])
+							set lotus.effect[fog_id] = AddSpecialEffectTarget(BLOOM_FX1, fog, "origin")
+							set burn.effect[fog_id] = AddSpecialEffectTarget(BLOOM_FX2, fog, "origin")
+							set countdown.real[fog_id] = BLOOM_TIME
+						endif
+						call GroupAddUnit(swap, fog)
+					else
+						if not IsUnitInGroup(fog, LotusFire[h].affected_units) then
+							set countdown.real[fog_id] = countdown.real[fog_id] - TICK32
+						endif
+
+						if not (tick_count.integer[fog_id] < ticks_per_dmg) then
+							call h.damage(fog, DAMAGE_TICK*tick_count.integer[fog_id]*h.getPowBonus())
+							set tick_count.integer[fog_id] = 0
+						else
+							set tick_count.integer[fog_id] = tick_count.integer[fog_id]+1
+						endif
+
+						if countdown.real[fog_id] < TICK32 then
+							call BlzSetSpecialEffectAlpha(lotus.effect[fog_id], 0)
+							call DestroyEffect(lotus.effect[fog_id])
+							call DestroyEffect(burn.effect[fog_id])
+						else
+							call GroupAddUnit(swap, fog)
+						endif
+					endif
+					
+				else //dead under effect, spawn lotus field
+					call DestroyEffect(lotus.effect[fog_id])
+					call DestroyEffect(burn.effect[fog_id])
+					//avoiding flower clutter
+					set x1 = GetUnitX(fog)
+					set y1 = GetUnitY(fog)
+					if not dont_create_field.boolean[fog_id] then
+						set close_to_another_flower = false
+						set i = 0
+						loop
+							exitwhen i==fx_hi
+							set x2 = field_x.real[i]
+							set y2 = field_y.real[i]
+							if has_flower.boolean[i] and (x1-x2)*(x1-x2) + (y1-y2)*(y1-y2) < BASE_SQUARED then
+								set close_to_another_flower = true
+								exitwhen true
+							endif
+							set i = i+1
+						endloop
+						if not close_to_another_flower then
+							set field_flower.effect[fx_hi] = AddSpecialEffect(LOTUS_FX1, x1, y1)
+							call BlzSetSpecialEffectAlpha(field_flower.effect[fx_hi], 0)
+							set has_flower.boolean[fx_hi] = true
+						else
+							set has_flower.boolean[fx_hi] = false
+						endif
+						
+						set field_aura.effect[fx_hi] = AddSpecialEffect(LOTUS_FX2, x1, y1)
+						//call BlzSetSpecialEffectScale(field_aura.effect[fx_hi], 0.0108*FIELD_BASE_RADIUS)
+						
+						set field_splat.image[fx_hi] = CreateImageSimple("Textures\\BlackSplat.blp", 2.375*FIELD_BASE_RADIUS, x1, y1, 0, true, 0)
+						call SetImageColor(field_splat.image[fx_hi],255,255,255,0)
+						set field_alpha.integer[fx_hi] = 0
+
+						set field_x.real[fx_hi] = x1
+						set field_y.real[fx_hi] = y1
+						set field_expanded.boolean[fx_hi] = false
+						set field_time.real[fx_hi] = FIELD_DURATION
+						
+						set fx_hi = fx_hi+1
+					endif
+					//spawn lotus fire if it's on
+					if LotusFire[h].on or LotusFire[h].explode then
+						call GroupRemoveUnit(LotusFire[h].affected_units, fog)
+						call DestroyEffect(LotusFire[h].burn_fx.effect[GetHandleId(fog)])
+						call LotusFire[h].addFlame(x1, y1, LotusFire[h].unit_damage.real[GetHandleId(fog)])
+					endif
+				endif
+				call GroupRemoveUnit(affected_units, fog)
+			endloop
+			set temp = swap
+			set swap = affected_units
+			set affected_units = temp
+			
+			//update boolean & time loop
+			set is_in_field = false
+			set WaxingMoonlightDance[h].expand_field = false
+			set i = 0
+			loop
+				exitwhen i==fx_hi
+				if not WaxingMoonlightDance[h].expand_field then
+					set x1 = h.x
+					set y1 = h.y
+					set x2 = field_x.real[i]
+					set y2 = field_y.real[i]
+					set distance = (x1-x2)*(x1-x2) + (y1-y2)*(y1-y2)
+					if not field_expanded.boolean[i] then
+						if distance < WMD_COMPARISON then
+							set WaxingMoonlightDance[h].expand_field = true
+							set occupied_field = i
+							set nearby = true
+						else
+							set nearby = (distance < BASE_SQUARED)
+						endif
+					else
+						set nearby = (distance < EXPANDED_SQUARED)
+					endif
+					if nearby then
+						set is_in_field = true
+					endif
+				endif
+				//fadein
+				if field_alpha.integer[i] != 255 then
+					set field_alpha.integer[i] = field_alpha.integer[i]+12
+					if field_alpha.integer[i] > 255 then
+						set field_alpha.integer[i] = 255
+					endif
+					call SetImageColor(field_splat.image[i],255,255,255, R2I(field_alpha.integer[i]*0.5))
+					call BlzSetSpecialEffectAlpha(field_flower.effect[i], field_alpha.integer[i])
+				endif
+				//fadeout at little time left
+				set field_time.real[i] = field_time.real[i] - TICK32
+				if field_time.real[i] < FIELD_FADEOUT then
+					set alpha = R2I(255*field_time.real[i]/FIELD_FADEOUT)
+					if has_flower.boolean[i] then
+						call BlzSetSpecialEffectAlpha(field_flower.effect[i], alpha)
+					endif
+					call BlzSetSpecialEffectScale(field_aura.effect[i],alpha*.004) //doesn't affect water fx but makes the particles narrower
+					call SetImageColor(field_splat.image[i],255,255,255,R2I(alpha*0.5))
+				endif
+				if field_time.real[i] < TICK32 then
+					call fieldSplice(i)
+				else
+					set i = i+1
+				endif
+			endloop
+			
+            set this = Timer(.timer).next
+            exitwhen this == 0
+        endloop
+        return true
+    endmethod
+	
+	method checkRange takes real hx, real hy returns boolean
+		local integer i = 0
+		local real x1
+		local real y1
+		local real x2
+		local real y2
+		local real distance
+		local boolean nearby
+		
+		loop
+			exitwhen i==fx_hi
+			set x1 = hx
+			set y1 = hy
+			set x2 = field_x.real[i]
+			set y2 = field_y.real[i]
+			set distance = (x1-x2)*(x1-x2) + (y1-y2)*(y1-y2)
+			if not field_expanded.boolean[i] then
+				set nearby = (distance < BASE_SQUARED)
+			else
+				set nearby = (distance < EXPANDED_SQUARED)
+			endif
+			if nearby then
+				return true
+			endif
+			set i = i+1
+		endloop
+		return false
+	endmethod
+	
+	method addUnit takes unit u returns nothing
+		local integer id = GetHandleId(u)
+		if not IsUnitInGroup(u, affected_units) then
+			call GroupAddUnit(affected_units, u)
+			set lotus.effect[id] = AddSpecialEffectTarget(DORMANT_FX, u, "origin")
+			set tick_count.integer[id] = 0
+		elseif not dormant.boolean[id] then //attacked while blooming
+			call BlzSetSpecialEffectAlpha(lotus.effect[id], 0)
+			call DestroyEffect(lotus.effect[id])
+			call DestroyEffect(burn.effect[id])
+			set lotus.effect[id] = AddSpecialEffectTarget(DORMANT_FX, u, "origin")
+		endif
+		set dormant.boolean[id] = true
+		set countdown.real[id] = DORMANT_TIME
+		
+	endmethod
+	
+	method fieldSplice takes integer fx_id returns nothing
+		set fx_hi=fx_hi-1
+		
+		if has_flower.boolean[fx_id] then
+			call DestroyEffect(field_flower.effect[fx_id])
+		endif
+		call DestroyEffect(field_aura.effect[fx_id])
+		call DestroyImage(field_splat.image[fx_id])
+		
+		if fx_id != fx_hi then
+			set has_flower.boolean[fx_id] = has_flower.boolean[fx_hi]
+			set field_flower.effect[fx_id] = field_flower.effect[fx_hi]
+			set field_aura.effect[fx_id] = field_aura.effect[fx_hi]
+			set field_splat.image[fx_id] = field_splat.image[fx_hi]
+			set field_time.real[fx_id] = field_time.real[fx_hi]
+			set field_expanded.boolean[fx_id] = field_expanded.boolean[fx_hi]
+			set field_x.real[fx_id] = field_x.real[fx_hi]
+			set field_y.real[fx_id] = field_y.real[fx_hi]
+		endif
+	endmethod
+	
+	static method deathevent takes nothing returns nothing
+		local unit u = GetTriggerUnit()
+		local thistype this
+		local integer i = 0
+		local integer k
+		local real x1 = GetUnitX(u)
+		local real y1 = GetUnitY(u)
+		local real dx
+		local real dy
+		local boolean nearby
+		local real distance
+		loop
+			exitwhen i==bloom_index
+			set this = bloom_array[i]
+			if IsUnitEnemy(u, h.owner) then
+				set dont_create_field.boolean[GetHandleId(u)] = false
+				set k = 0
+				loop
+					exitwhen k == fx_hi
+					set dx = field_x.real[k]-x1
+					set dy = field_y.real[k]-y1
+					set distance = (dx*dx)+(dy*dy)
+					if not field_expanded.boolean[k] then
+						set nearby = (distance<BASE_SQUARED)
+					else
+						set nearby = (distance<EXPANDED_SQUARED)
+					endif
+					
+					//set alpha correctly
+					if nearby then
+						
+						call BlzSetSpecialEffectAlpha(field_flower.effect[k],255)
+						call SetImageColor(field_splat.image[k],255,255,255,128)
+						call BlzSetSpecialEffectScale(field_aura.effect[k],1)
+						if distance < 2304 then//48^2 max out duration instead if new field is too closeby
+							set dont_create_field.boolean[GetHandleId(u)] = true
+							set field_time.real[k] = FIELD_DURATION
+						else
+							set field_time.real[k] = field_time.real[k] + DEATH_BONUS_DURATION
+							if field_time.real[k] > FIELD_DURATION then
+								set field_time.real[k] = FIELD_DURATION
+							endif
+						endif
+					endif
+					set k = k+1
+				endloop
+			endif
+			set i = i+1
+		endloop
+		set u = null
+	endmethod
+	
+    private static method onInit takes nothing returns nothing
+        //call RegisterSpellEffectEvent(SPELLID, function thistype.run)
+        set expireC = Condition(function thistype.expire)
+        set expireI = thistype.expire
+    endmethod
+endstruct
+
+endlibrary
+

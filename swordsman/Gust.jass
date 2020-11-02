@@ -1,0 +1,452 @@
+library SwordsmanGust uses SpellEffectEvent
+
+globals
+	private constant string VANISH_FX = "BlackBlink.mdx"
+	private constant string DAMAGE_FX_LOTUS = "BlackSlam.mdx"
+	private constant string DAMAGE_FX = "BlackSlamNoStars.mdx"
+	private constant real CHARGE_DIST_PER_SEC   = 100
+	private constant real MAX_CHARGE_TIME		= 3
+	private constant real DELTA_TICK			= 0.024543 //max ~45 degree change during travel time
+	private constant real WAIT_TIME 			= 1.5
+	private constant real TRAVEL_TIME 			= 1
+	private constant real END_DELAY 			= 0.225
+	private constant real MANACOST 				= 20
+	private constant real BASE_MAX_RANGE 		= 300
+	private constant real SCALE_MAX_RANGE		= 300
+	private constant real RADIUS 				= 200
+	private constant real DAMAGE 				= 20
+	private constant real DIST_PER_ATTACK 		= 96
+	private constant real ANIMATION_DELAY = WAIT_TIME+TRAVEL_TIME-0.35
+	private constant string INDICATOR_FX = "GustIndicator.mdx"
+	private constant string SHADOW = "ReplaceableTextures\\Shadows\\Shadow.blp"
+	private constant real HITSTUN	= 2
+	private constant real HITSTUN_F = 0.75
+	private constant real KNOCKBACK = 48
+endglobals
+
+struct Gust extends array
+	implement KeyDown
+    implement TimerHead
+	static constant integer SPELLID = 'A031'
+    private Timer timer
+    private static boolexpr expireC
+    private static integer expireI
+    private HeroData h
+	private group affected_enemies
+	private static Sound VANISH_SND //should be less than total time or it wont play every time
+	private static Sound array SWING_SND[3]
+	private static Sound array HIT_SND[3]
+	private static Sound STEP_SND
+	boolean on
+	boolean started
+	real start_point_x
+	real start_point_y
+	real curr_angle_to_dest
+	real distance_to_travel //might not need to be member
+	real distance_travelled
+	real t
+	real tick_dist
+	real atk_dist_thres
+	boolean played_animation
+	boolean start_footsteps
+	integer num_of_attacks
+	//effect footstep_clone
+	unit footstep_clone
+	boolean bell_delay
+	boolean end_effects
+	boolean targeting_field
+	boolean disabled
+	private effect gust_indicator
+	private real indicator_angle
+	private integer indicator_alpha
+	image shadow
+	boolean sufficient_mana
+    
+    public static method initialize takes thistype this returns nothing
+        set .h = this
+        set .timer = Timer.create(TICK32, expireC, expireI)
+        call add(.timer)
+        set id[.timer] = this
+		call regKey($51)
+		set affected_enemies = CreateGroup()
+		//set footstep_clone = AddSpecialEffect("war3mapImported\\HeroRonin.mdl",0,0)
+		//call BlzSetSpecialEffectAlpha(footstep_clone, 0)
+		//call BlzSetSpecialEffectTimeScale(footstep_clone, 4)
+		set footstep_clone = CreateUnit(Player(0), 'H00E', 0, 0, 0)
+		call SetUnitVertexColor(footstep_clone,0,0,0,0)
+		call ShowUnit(footstep_clone,false)
+		set disabled = false
+		set h.disabled_skills.integer[SPELLID] = 0
+		set gust_indicator = AddSpecialEffect(INDICATOR_FX, 0, 0)
+		set indicator_angle = 0
+		set indicator_alpha = 0
+		call BlzSetSpecialEffectScale(gust_indicator, 1.5)
+		set shadow = CreateImageSimple(SHADOW, 100, 0, 0, 0, true, 0)
+		set sufficient_mana = true
+    endmethod
+    
+    private static method run takes nothing returns nothing
+        local thistype this = GetUnitUserData(GetTriggerUnit())
+
+        if 0!=.h and GetIssuedOrderId() == DEFEND then
+			if not on and not Eclipse[h].on then
+				if h.manacost(MANACOST, false) > 0 then
+					if not disabled then
+						set disabled = true
+						call h.disableSkill(SPELLID)
+						call h.disableSkill(Breath.SPELLID)
+						call h.disableSkill(WaxingMoonlightDance.SPELLID)
+						call h.disableSkill(Eclipse.SPELLID)
+						call h.disableSkill(LotusFire.SPELLID)
+					endif
+					set on = true
+					set started = false
+					call BlzSetSpecialEffectAlpha(gust_indicator, 0)
+					set indicator_alpha = 0
+					set targeting_field = false
+					
+					set start_point_x = h.x
+					set start_point_y = h.y
+					set curr_angle_to_dest = Atan2(h.mousey-h.y, h.mousex-h.x)
+		
+					set distance_travelled = 0
+					
+					set atk_dist_thres = DIST_PER_ATTACK //start off with an attack at 0 range, just in case some moron decides to dash like 2 inches
+					set played_animation = false
+					set start_footsteps = false
+					set num_of_attacks = 0
+					set t = -2*TICK32 //compensates for an extra tick here and one when it casts
+								
+					set bell_delay = false
+					set end_effects = false
+
+					call buildDistance()
+				endif
+			elseif Eclipse[h].on then
+				set Eclipse[h].overhead = true
+				call IssueImmediateOrderById(h.hero, UNIMMOLATION)
+			endif
+		endif
+    endmethod
+
+	private method buildDistance takes nothing returns nothing
+		local real current_max_dist
+		local real bonus_dist
+
+		set curr_angle_to_dest = Atan2(h.mousey-h.y, h.mousex-h.x)
+				
+		set t = t + TICK32
+		if indicator_alpha + 32 > 350 then
+			set indicator_alpha = 350
+		else
+			set indicator_alpha = indicator_alpha + 32
+		endif
+
+		if not Eclipse[h].on then //follow cursor
+			//clamp distance or project to other bloom field if available
+			set distance_to_travel = GetDistance(h.x,h.y,h.mousex,h.mousey)
+
+			if t > MAX_CHARGE_TIME then
+				set bonus_dist = MAX_CHARGE_TIME*CHARGE_DIST_PER_SEC
+			else
+				set bonus_dist = t*CHARGE_DIST_PER_SEC
+			endif
+
+			set current_max_dist = BASE_MAX_RANGE + SCALE_MAX_RANGE*h.getSpdBonus() + bonus_dist
+
+			set targeting_field = false
+			if Bloom[h].is_in_field and Bloom[h].checkRange(h.mousex, h.mousey) then
+				if distance_to_travel > current_max_dist then
+					set targeting_field = true
+				endif
+			elseif distance_to_travel > current_max_dist then
+				set distance_to_travel = current_max_dist
+			endif
+
+			set indicator_angle = Atan2(h.mousey-h.y, h.mousex-h.x)
+			call BlzSetSpecialEffectPosition(gust_indicator, h.x + distance_to_travel*Cos(indicator_angle), h.y + distance_to_travel*Sin(indicator_angle), 0)
+		else //indicate eclipse overhead range
+			set indicator_angle = Deg2Rad(GetUnitFacing(h.hero))
+			set current_max_dist = -32+Eclipse[h].charge_time*90 //eclipse dist per sec
+			call BlzSetSpecialEffectPosition(gust_indicator, h.x + current_max_dist*Cos(indicator_angle), h.y + current_max_dist*Sin(indicator_angle), 0)
+		endif
+
+		call BlzSetSpecialEffectYaw(gust_indicator, indicator_angle-pi)
+	endmethod
+    
+    private static method expire takes nothing returns boolean
+        local thistype this = thistype(Timer.expired).first
+		local effect damage_sfx
+		local real interp_x
+		local real interp_y
+		local real angle_to_cursor
+		local real ad
+		local effect vanish_sfx
+        loop
+            set this = id[this]
+			//after 1 second begin quickly moving to destination over 0.5s
+			//deal damage and play sfx in circle every 100 or so dist
+			//end if travelled distance greater than desired distance
+			//become visible again
+			call SetImagePosition(shadow,h.x-7.5,h.y-10,0)
+			
+			if (on and keydown and not started) or Eclipse[h].on then
+				if h.isAlive() then
+					call buildDistance()
+				else //hero died during charge
+					set on = false
+					set indicator_alpha = 0
+					call BlzSetSpecialEffectAlpha(gust_indicator, 0)
+					call SetImageColor(shadow, 255,255,255,196)
+					if disabled then
+						set disabled = false
+						call h.enableSkill(SPELLID)
+						call h.enableSkill(Breath.SPELLID)
+						call h.enableSkill(WaxingMoonlightDance.SPELLID)
+						call h.enableSkill(Eclipse.SPELLID)
+						call h.enableSkill(LotusFire.SPELLID)
+					endif
+				endif
+				
+			elseif on then
+				if not started then
+					set started = true
+					call buildDistance()
+					set tick_dist = (distance_to_travel / TRAVEL_TIME)*TICK32
+					set t = 0
+					call SetImageColor(shadow, 255,255,255,0)
+
+					if Bloom[h].is_in_field then
+						set Breath[h].dont_turn_off = true
+					endif
+
+					call h.orderStop() //cancels walking anim which cancels the attack anim for some fucking reason
+					//call SetUnitBlendTime(h.hero, 0.5) //call it first because setting blend time in the middle of an animation jitters it
+					
+					call SetUnitVertexColor(h.hero,255,255,255,0)
+					call h.hold(true)
+					call UnitAddType(h.hero, UNIT_TYPE_ANCIENT)
+					set vanish_sfx = AddSpecialEffect(VANISH_FX, h.x, h.y)
+					call BlzSetSpecialEffectTimeScale(vanish_sfx, 9)
+					call DestroyEffect(vanish_sfx)
+					call ShowUnit(footstep_clone, true)
+					call UnitRemoveAbility(footstep_clone, 'Aloc')
+					call UnitAddAbility(footstep_clone, 'Aloc')
+					call SetUnitAnimationByIndex(footstep_clone, 3)
+					call SetUnitTimeScale(footstep_clone, 0)
+					
+					call SetUnitFacing(footstep_clone, Rad2Deg(curr_angle_to_dest))
+					call SetUnitX(footstep_clone, h.x)
+					call SetUnitY(footstep_clone, h.y)
+				endif
+
+				if indicator_alpha - 32 < 0 then
+					set indicator_alpha = 0
+				else
+					set indicator_alpha = indicator_alpha - 32
+				endif
+
+				set t = t+TICK32
+				
+				if t > ANIMATION_DELAY and not played_animation then
+					set played_animation = true
+					call SetUnitAnimationByIndex(h.hero, 2)
+					call SetUnitTurnSpeed(h.hero, 0)
+				else
+					call SetUnitFacing(h.hero, Rad2Deg(curr_angle_to_dest))
+					call SetUnitFacing(footstep_clone, Rad2Deg(curr_angle_to_dest))
+				endif
+				if t > .366 and not bell_delay then
+					set bell_delay = true
+					call VANISH_SND.runPointEx(h.x,h.y,0,64,1)
+				endif
+				if t > WAIT_TIME then
+					if not start_footsteps then
+						set start_footsteps = true
+						call SetUnitTimeScale(footstep_clone, distance_to_travel/200)
+						call SetUnitAnimationByIndex(footstep_clone, 6)
+					endif
+					if t < WAIT_TIME+TRAVEL_TIME then //move + deal dmg
+						set angle_to_cursor = Atan2(h.mousey-h.y, h.mousex-h.x)
+						//no turning if target was in bloom field out of regular range
+						if not targeting_field then
+							set ad = SignedAngleDifferenceRad(curr_angle_to_dest, angle_to_cursor)
+							if (ad < 0 and not (ad < -0.85*pi)) or (ad > 0 and not (ad > 0.85*pi)) then
+								if ad < 0 then
+									set curr_angle_to_dest = curr_angle_to_dest - DELTA_TICK
+								else
+									set curr_angle_to_dest = curr_angle_to_dest + DELTA_TICK
+								endif
+							endif
+						endif
+						call SetUnitX(h.hero, h.x+tick_dist*Cos(curr_angle_to_dest))
+						call SetUnitY(h.hero, h.y+tick_dist*Sin(curr_angle_to_dest))
+						call SetUnitFacing(h.hero, Rad2Deg(curr_angle_to_dest))
+						call SetUnitFacing(footstep_clone, Rad2Deg(curr_angle_to_dest))
+						
+						set distance_travelled = distance_travelled + tick_dist
+						set start_point_x = h.x+distance_travelled*Cos(curr_angle_to_dest-pi)
+						set start_point_y = h.y+distance_travelled*Sin(curr_angle_to_dest-pi)
+						call SetUnitX(footstep_clone, h.x)
+						call SetUnitY(footstep_clone, h.y)
+						
+						set atk_dist_thres = atk_dist_thres + tick_dist
+						if atk_dist_thres > DIST_PER_ATTACK then //deal damage
+							call SWING_SND[GetRandomInt(0,2)].runPointEx(h.x,h.y,0,64,GetRandomReal(0.9,1.1))
+							loop
+								exitwhen atk_dist_thres < DIST_PER_ATTACK //deal attacks at interpolated points until current travel distance is exhausted
+								
+								set atk_dist_thres = atk_dist_thres - DIST_PER_ATTACK
+								set interp_x = start_point_x + DIST_PER_ATTACK*Cos(curr_angle_to_dest)*num_of_attacks
+								set interp_y = start_point_y + DIST_PER_ATTACK*Sin(curr_angle_to_dest)*num_of_attacks
+								set num_of_attacks = num_of_attacks+1
+								
+								if targeting_field then
+									set damage_sfx = AddSpecialEffect(DAMAGE_FX_LOTUS,interp_x,interp_y)
+								else
+									set damage_sfx = AddSpecialEffect(DAMAGE_FX,interp_x,interp_y)
+								endif
+								call BlzSetSpecialEffectYaw(damage_sfx, GetRandomReal(0,7.28))
+								call BlzSetSpecialEffectRoll(damage_sfx, GetRandomReal(-1,1))
+								call BlzSetSpecialEffectTimeScale(damage_sfx, 1)
+								call DestroyEffect(damage_sfx)
+								
+								call DealDamage(interp_x,interp_y)
+							endloop
+						endif
+						//call BJDebugMsg(R2S(distance_travelled) + "/" + R2S(distance_to_travel))
+					elseif t < WAIT_TIME+TRAVEL_TIME+END_DELAY and not end_effects then
+						set end_effects = true
+						set Breath[h].dont_turn_off = false
+						if not Breath[h].on then
+							call QueueUnitAnimation(h.hero, "stand ready")
+							call QueueUnitAnimation(h.hero, "stand")
+						else
+							call QueueUnitAnimation(h.hero, "stand upgrade")
+							call QueueUnitAnimation(h.hero, "stand defend")
+						endif
+						call SetUnitVertexColor(h.hero,255,255,255,255)
+						//call SetUnitScale(h.hero, 1,1,1)
+						call ShowUnit(footstep_clone, false)
+					else//end abilty
+						set on = false
+						set event_herodata = this
+						call checkManaCosts()
+						call flushDamagedUnits()
+						call h.hold(false)
+						call h.orderStop()
+                        if not Breath[h].on then
+						    call SetUnitTurnSpeed(h.hero, GetUnitDefaultTurnSpeed(h.hero))
+                        else
+                            call SetUnitTurnSpeed(h.hero, 0.05)
+                        endif
+						call UnitRemoveType(h.hero, UNIT_TYPE_ANCIENT)
+						if disabled then
+							set disabled = false
+							call h.enableSkill(SPELLID)
+							call h.enableSkill(Breath.SPELLID)
+							call h.enableSkill(WaxingMoonlightDance.SPELLID)
+							call h.enableSkill(Eclipse.SPELLID)
+							call h.enableSkill(LotusFire.SPELLID)
+						endif
+					endif
+				endif //t > WAIT_TIME
+			else
+				call SetImageColor(shadow, 255,255,255,196)
+				if indicator_alpha - 32 < 0 then
+					set indicator_alpha = 0
+				else
+					set indicator_alpha = indicator_alpha - 32
+				endif
+			endif
+			if indicator_alpha > 128 then
+				if GetLocalPlayer() == h.owner then
+					call BlzSetSpecialEffectAlpha(gust_indicator, indicator_alpha-128)
+				endif
+			else
+				call BlzSetSpecialEffectAlpha(gust_indicator, 0)
+			endif		
+			
+            set this = Timer(.timer).next
+            exitwhen this == 0
+        endloop
+        return true
+    endmethod
+	
+	method DealDamage takes real x, real y returns nothing
+		local unit fog
+		local real fa
+		call GroupEnumUnitsInRange(grp, x,y,RADIUS,null)
+		loop
+			set fog = FirstOfGroup(grp)
+			exitwhen null==fog
+			
+			if IsUnitEnemy(fog, h.owner) and not IsUnitInGroup(fog, affected_enemies) and EnemyData[fog].is_alive then
+				call GroupAddUnit(affected_enemies,fog)
+				call h.damage(fog, DAMAGE*h.getPowBonus())
+				if EnemyData[fog].is_alive then
+					call Debuff.hitstun(fog, HITSTUN, false, null)
+					call Debuff.hitstunFreeze(fog, HITSTUN_F)
+					call HIT_SND[GetRandomInt(0,2)].runPointEx(h.x,h.y,0,32,GetRandomReal(0.9,1.1))
+					if SignedAngleDifferenceRad(curr_angle_to_dest, Atan2(GetUnitY(fog)-h.y, GetUnitX(fog)-h.x)) < 0 then
+						set fa = curr_angle_to_dest+1.5708
+					else
+						set fa = curr_angle_to_dest-1.5708
+					endif
+					call SetUnitX(fog, GetUnitX(fog)+(KNOCKBACK*Cos(fa+pi)))
+					call SetUnitY(fog, GetUnitY(fog)+(KNOCKBACK*Sin(fa+pi)))
+					call SetUnitLookAt(fog, "bone_head", fog, GetUnitX(fog) + 1000*Cos(fa), GetUnitY(fog) + 1000*Sin(fa),0)
+					call SetUnitFacing(fog, fa*bj_RADTODEG)
+				endif
+				call Bloom[h].addUnit(fog)
+				//add or refresh shadow marks
+			endif
+			
+			call GroupRemoveUnit(grp,fog)
+		endloop
+	endmethod
+	
+	method flushDamagedUnits takes nothing returns nothing
+		local unit fog
+		loop
+			set fog = FirstOfGroup(affected_enemies)
+			exitwhen null == fog
+			
+			call GroupRemoveUnit(affected_enemies, fog)
+		endloop
+	endmethod
+
+	static method checkManaCosts takes nothing returns nothing
+		local thistype this = event_herodata
+		local boolean has_mp
+		if 0!=h and not Eclipse[h].on then
+			set has_mp = not (h.mana < MANACOST)
+			if has_mp and not sufficient_mana then
+				call h.enableSkill(SPELLID)
+				call h.setAbilityManaVisibility(0, false)
+				set sufficient_mana = true
+			elseif not has_mp and sufficient_mana then
+				call h.disableSkill(SPELLID)
+				set sufficient_mana = false
+				call h.setAbilityManaVisibility(0, true)
+			endif
+		endif
+	endmethod
+    
+    private static method onInit takes nothing returns nothing
+        //call RegisterSpellEffectEvent(SPELLID, function thistype.run)
+		call RegisterPlayerUnitEvent(EVENT_PLAYER_UNIT_ISSUED_ORDER, function thistype.run)
+		call CreateRealEventTrigger("event_manacheck", 1.00, function thistype.checkManaCosts)
+        set expireC = Condition(function thistype.expire)
+        set expireI = thistype.expire
+		set VANISH_SND = Sound.create("jinglebells.wav", GetSoundFileDuration("jinglebells.wav"), false, true)
+		set SWING_SND[0] = Sound.create("Abilities\\Weapons\\BristleBackMissile\\BristleBackMissileLaunch1.wav", GetSoundFileDuration("Abilities\\Weapons\\BristleBackMissile\\BristleBackMissileLaunch1.wav"), false, true)
+		set SWING_SND[1] = Sound.create("Abilities\\Weapons\\BristleBackMissile\\BristleBackMissileLaunch2.wav", GetSoundFileDuration("Abilities\\Weapons\\BristleBackMissile\\BristleBackMissileLaunch2.wav"), false, true)
+		set SWING_SND[2] = Sound.create("Abilities\\Weapons\\BristleBackMissile\\BristleBackMissileLaunch3.wav", GetSoundFileDuration("Abilities\\Weapons\\BristleBackMissile\\BristleBackMissileLaunch3.wav"), false, true)
+		set HIT_SND[0] = Sound.create("Sound\\Units\\Combat\\MetalLightSliceMetal1.wav", GetSoundFileDuration("Sound\\Units\\Combat\\MetalLightSliceMetal1.wav"), false, true)
+        set HIT_SND[1] = Sound.create("Sound\\Units\\Combat\\MetalLightSliceMetal2.wav", GetSoundFileDuration("Sound\\Units\\Combat\\MetalLightSliceMetal2.wav"), false, true)
+        set HIT_SND[2] = Sound.create("Sound\\Units\\Combat\\MetalLightSliceMetal3.wav", GetSoundFileDuration("Sound\\Units\\Combat\\MetalLightSliceMetal3.wav"), false, true)
+	endmethod
+endstruct
+
+endlibrary

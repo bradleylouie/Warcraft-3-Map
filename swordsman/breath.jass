@@ -1,0 +1,282 @@
+library SwordsmanBreath uses SpellEffectEvent
+
+globals
+	private constant real SIT_DOWN_TIME = 3
+	private constant real STAND_UP_TIME = 1.5
+	private constant real GAIN_PERIOD = 10
+	private constant real GAIN_TIME_RAMP = 1
+	private constant real STAT_BONUS = 1
+	private constant real LOTUS_MOVE_MOD = 0.15
+	private constant string PROC_FX = "GatherSouls.mdx"
+	private constant string AMBIENT_FX =  "breathambient.mdx"
+	private constant string ICON_OFF = "ReplaceableTextures\\CommandButtons\\BTNbreath.blp"
+	private constant string ICON_ON = "ReplaceableTextures\\CommandButtons\\BTNbreathactive.blp"
+	private constant real SFX_TIME = 1.25
+endglobals
+
+struct Breath extends array
+    implement TimerHead
+	static constant integer SPELLID = 'A035'
+    private Timer timer
+    private static boolexpr expireC
+    private static integer expireI
+    private HeroData h
+	boolean on
+	boolean started_animation
+	boolean can_walk
+	boolean changing_states
+	real t
+	boolean sitting_down
+	real next_bonus_time
+	real bonus_t
+	private integer total_bonus
+	private real sfx_t
+	private effect proc_fx
+	private boolean destroy_effect
+	private effect ambient_fx
+	private boolean create_ambient_fx
+	boolean disabled
+	boolean dont_turn_off
+
+    public static method initialize takes thistype this returns nothing
+        set .h = this
+        set .timer = Timer.create(TICK32, expireC, expireI)
+        call add(.timer)
+        set id[.timer] = this
+		set can_walk = false
+		set changing_states = false
+		set sitting_down = false
+		set t = 0
+		set next_bonus_time = GAIN_PERIOD
+		set bonus_t = 0
+		set total_bonus = 0
+		set sfx_t = 0
+		set destroy_effect = false
+		set create_ambient_fx = true
+		set disabled = false
+		set h.disabled_skills.integer[SPELLID] = 0
+		set dont_turn_off = false
+		call h.setAbilityCounter(6, R2SW(next_bonus_time, 1, 1)+"s")
+    endmethod
+	
+	private static method run takes nothing returns nothing
+		local thistype this = GetUnitUserData(GetTriggerUnit())
+		if 0!=h then
+			if not on then
+				set on = true
+				set can_walk = false
+				if GetLocalPlayer() == h.owner then
+					call BlzSetAbilityIcon(SPELLID, ICON_ON)
+				endif
+				call BJDebugMsg("1")
+				call stateCheck(true)
+			else
+				call BJDebugMsg("2")
+				set on = false
+				call stateCheck(false)
+			endif
+		endif
+	endmethod
+    
+    private static method expire takes nothing returns boolean
+        local thistype this = thistype(Timer.expired).first
+        loop
+            set this = id[this]
+			
+			//change states
+			if on then 
+				call BJDebugMsg("3")
+				call stateCheck(false)
+			endif
+			
+			if on and not started_animation then
+				if not can_walk then //sit down
+					//call BJDebugMsg("start sitting down")
+					call SetUnitAnimationByIndex(h.hero, 16)
+					set started_animation = true
+					call QueueUnitAnimation(h.hero, "stand alternate")
+				else //stand up into prayer
+					//call BJDebugMsg("start standing up into prayer")
+					call SetUnitAnimationByIndex(h.hero, 18)
+					set started_animation = true
+					call QueueUnitAnimation(h.hero, "stand defend")
+				endif
+			elseif not started_animation then
+				call SetUnitAnimationByIndex(h.hero, 18)
+				set started_animation = true
+				call QueueUnitAnimation(h.hero, "stand")
+			endif
+			
+			if changing_states then
+				set t = t+TICK32
+				if (not on or can_walk) and t>STAND_UP_TIME then //finish standing up
+					//all BJDebugMsg("finish standing up")
+					set changing_states = false
+					if sitting_down then
+						set sitting_down = false
+						call h.hold(false)
+					endif
+					if not on and not Eclipse[h].on and not LotusFire[h].on then
+						//call BJDebugMsg("normal")
+						call SetUnitTurnSpeed(h.hero, GetUnitDefaultTurnSpeed(h.hero))
+						set h.msbonus = 1
+					endif
+					
+					if disabled then
+						set disabled = false
+						call h.enableSkill(Gust.SPELLID)
+						call h.enableSkill(Eclipse.SPELLID)
+						call h.enableSkill(WaxingMoonlightDance.SPELLID)
+						call h.enableSkill(LotusFire.SPELLID)
+					endif
+				elseif on and not can_walk and t>SIT_DOWN_TIME then //finish sitting down
+					//call BJDebugMsg("finish sitting down")
+					set changing_states = false
+				endif
+			endif
+			
+			if not WaxingMoonlightDance[h].on and not (Gust[h].on and not Gust[h].started) and on and (can_walk or sitting_down) then
+				if create_ambient_fx then
+					set create_ambient_fx = false
+					set ambient_fx = AddSpecialEffectTarget(AMBIENT_FX, h.hero, "chest")
+				endif
+				set bonus_t = bonus_t + TICK32
+				
+				if bonus_t > next_bonus_time then
+					set bonus_t = 0
+					call h.modSpd(STAT_BONUS)
+					call h.modPow(STAT_BONUS)
+					set total_bonus = total_bonus+1
+					set next_bonus_time = next_bonus_time + GAIN_TIME_RAMP
+					set proc_fx = AddSpecialEffectTarget(PROC_FX, h.hero, "chest")
+					set destroy_effect = true
+					set sfx_t = 0
+					//increase item counter
+				else
+					call h.setAbilityCounter(6, R2SW(next_bonus_time-bonus_t, 1, 1)+"s")
+				endif
+			endif
+			
+			if destroy_effect then
+				set sfx_t = sfx_t + TICK32
+				if sfx_t > SFX_TIME then
+					call DestroyEffect(proc_fx)
+					set destroy_effect = false
+				endif
+			endif
+			
+            set this = Timer(.timer).next
+            exitwhen this == 0
+        endloop
+        return true
+    endmethod
+	
+	method stateCheck takes boolean start returns nothing
+		if on then
+			if not Bloom[h].is_in_field and not dont_turn_off then
+				//sit down
+				if can_walk or start then
+					if Eclipse[h].on or Gust[h].on then
+						set on = false
+						if Eclipse[h].on then
+							call AddUnitAnimationProperties(h.hero, "ready", true)
+							call AddUnitAnimationProperties(h.hero, "upgrade", false)
+						endif
+						call BJDebugMsg("4")
+						call stateCheck(false)
+						call IssueImmediateOrder(h.hero, "stop")
+					else
+						//call BJDebugMsg("sit down (from prayer)")
+
+						if can_walk then
+							set on = false
+							call BJDebugMsg("6")
+							call stateCheck(false)
+						else
+							if not sitting_down then
+								set sitting_down = true
+								call h.hold(true)
+							endif
+
+							call SetUnitTurnSpeed(h.hero, 0.0)
+							set can_walk = false
+							set started_animation = false
+							set h.msbonus = 1
+							call AddUnitAnimationProperties(h.hero, "alternate", true)
+							call AddUnitAnimationProperties(h.hero, "defend", false)
+							set changing_states = true
+							set t = 0
+							if not disabled then
+								set disabled = true
+								call h.disableSkill(Gust.SPELLID)
+								call h.disableSkill(Eclipse.SPELLID)
+								call h.disableSkill(WaxingMoonlightDance.SPELLID)
+								call h.disableSkill(LotusFire.SPELLID)
+							endif
+							call IssueImmediateOrder(h.hero, "stop")
+						endif
+					endif
+				else
+					call IssueImmediateOrder(h.hero, "stop")
+				endif
+			//stand up
+			elseif not can_walk then
+				call BJDebugMsg("7")
+				//call BJDebugMsg("prayer (from stand up)")
+				if sitting_down then
+					set changing_states = true
+					set started_animation = false
+				endif
+				set can_walk = true
+				if not Eclipse[h].on then
+					set h.msbonus = LOTUS_MOVE_MOD
+					call SetUnitTurnSpeed(h.hero, 0.05)
+				endif
+				call AddUnitAnimationProperties(h.hero, "alternate", false)
+				
+				if Eclipse[h].on then
+					call AddUnitAnimationProperties(h.hero, "ready", false)
+					call AddUnitAnimationProperties(h.hero, "upgrade", true)
+				else
+					call AddUnitAnimationProperties(h.hero, "defend", true)
+				endif
+				
+				set t = 0
+			endif
+		elseif not dont_turn_off then
+			call BJDebugMsg("8")
+			if GetLocalPlayer() == h.owner then
+				call BlzSetAbilityIcon(SPELLID, ICON_OFF)
+			endif
+			set changing_states = true
+			if can_walk then
+				//call BJDebugMsg("prayer to normal")
+				set started_animation = true
+				set t = STAND_UP_TIME+1
+			else
+				//call BJDebugMsg("stand up to normal")
+				set started_animation = false
+				set t = 0
+			endif
+			if not create_ambient_fx then
+				call DestroyEffect(ambient_fx)
+				set create_ambient_fx = true
+			endif
+			if Eclipse[h].on then
+				call AddUnitAnimationProperties(h.hero, "upgrade", false)
+				call AddUnitAnimationProperties(h.hero, "ready", true)
+			endif
+			
+			call AddUnitAnimationProperties(h.hero, "defend", false)
+			call AddUnitAnimationProperties(h.hero, "alternate", false)
+		endif
+	endmethod
+    
+    private static method onInit takes nothing returns nothing
+		call RegisterSpellEffectEvent(SPELLID, function thistype.run)
+        set expireC = Condition(function thistype.expire)
+        set expireI = thistype.expire
+    endmethod
+endstruct
+
+endlibrary

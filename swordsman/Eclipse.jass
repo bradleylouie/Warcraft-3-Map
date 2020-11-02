@@ -1,0 +1,573 @@
+library SwordsmanEclipse uses SpellEffectEvent
+
+globals
+	private constant string BLADE_SFX = "EclipseMissile.mdx"
+	private constant string TIP_SFX = "HealBottleMissileNoSound.mdx"
+	private constant string OVERHEAD_SFX = "ShadowAssault.mdx"
+	private constant real BASE_CHARGE_TIME = 10
+	private constant real LV_CHARGE_TIME = 1
+	private constant real ATTACK_TIME = 0.9
+	private constant real TIME_PER_SFX = 0.16
+	private constant real DISTANCE_PER_SEC = 90
+	private constant real DAMAGE_PER_SEC = 7.5
+	private constant real OVERHEAD_BONUS = 1.5
+	private constant real OVERHEAD_WIDTH = 125 //actually half, so 250
+	private constant real MINIMUM_CHARGE_TIME = 3
+	private constant real MANA_COST = 49.96
+	private constant string BUILDUP1 = "eclipsebuildup1.wav"
+	private constant string BUILDUP2 = "eclipsebuildup2loop.wav"
+	private constant string BUILDUP3 = "eclipsebuildup3.wav"
+	private constant string CLAP = "eclipseclap.wav"
+	private constant string SWING = "eclipseswing.wav"
+	private constant string SLAM = "eclipseslam.wav"
+	private constant real HITSTUN	= 5
+	private constant real HITSTUN_F = 0.25
+	private constant real KNOCKBACK = 128
+endglobals
+
+struct Eclipse extends array
+    implement TimerHead
+	static constant integer SPELLID = 'A034'
+    private Timer timer
+	private static constant real DISTANCE_PER_SFX = DISTANCE_PER_SEC * TIME_PER_SFX
+    private static boolexpr expireC
+    private static integer expireI
+    private HeroData h
+	private Table blade
+	boolean on
+	private integer sfx_hi
+    private real sfx_t
+	private real t
+	boolean charging
+	boolean attacking
+	private boolean fade_out
+	private boolean tip_formed
+	private sound buildup1
+	private sound buildup2
+	private sound buildup3
+	private sound clap
+	private sound swing
+	private sound slam
+	private real time_left_buildup1
+	private boolean start_buildup2
+	private boolean start_buildup3
+	private real buildup2_t
+	private static Table this_struct 
+	boolean overhead
+	real charge_time
+	private group damaged_units
+	boolean disabled
+	boolean breath_disabled
+	private real spent_mana
+	private real max_charge_time
+	timer buildup_timer
+	boolean sufficient_mana
+	
+    public static method initialize takes thistype this returns nothing
+        set .h = this
+        set .timer = Timer.create(TICK32, expireC, expireI)
+        call add(.timer)
+        set id[.timer] = this
+		set blade = Table.create()
+		set sfx_hi = 0
+		set buildup1 = CreateSound(BUILDUP1, false, false, true, 10, 10, "")
+		set buildup2 = CreateSound(BUILDUP2, true, false, true, 10, 10, "")
+		set buildup3 = CreateSound(BUILDUP3, false, false, true, 10, 10, "")
+		set clap = CreateSound(CLAP, false, false, true, 10, 10, "")
+		set swing = CreateSound(SWING, false, false, true, 10, 10, "")
+		set slam = CreateSound(SLAM, false, false, true, 10, 10, "")
+		call SetSoundVolume(buildup1, 96)
+		call SetSoundVolume(buildup2, 96)
+		call SetSoundVolume(buildup3, 96)
+		call SetSoundVolume(clap, 96)
+		set damaged_units = CreateGroup()
+		set disabled = false
+		set h.disabled_skills.integer[SPELLID] = 0
+		set breath_disabled = false
+		set on = false
+		set charging = false
+		set attacking = false
+		set overhead = false
+		set sufficient_mana = true
+    endmethod
+    
+    private static method run takes nothing returns nothing
+        local thistype this = GetUnitUserData(GetTriggerUnit())
+        local real time_needed_to_charge
+        if 0==.h then
+            call .initialize(this)
+        endif
+		
+		if not on and h.mana > MANA_COST then
+			set max_charge_time = (BASE_CHARGE_TIME + LV_CHARGE_TIME*h.A(1))
+			set spent_mana = 0
+			set t = 0
+			if not disabled then
+				set disabled = true
+				call h.disableSkill(WaxingMoonlightDance.SPELLID)
+				set breath_disabled = true
+				call h.disableSkill(Breath.SPELLID)
+				call h.disableSkill(LotusFire.SPELLID)
+			endif
+			set overhead = false
+			set on = true
+			set charge_time = 0
+			set h.msbonus = 0.15
+			if not Breath[h].on then
+				call AddUnitAnimationProperties(h.hero, "ready", true)
+			else
+				call AddUnitAnimationProperties(h.hero, "defend", false)
+				call AddUnitAnimationProperties(h.hero, "upgrade", true)
+			endif
+			call SetUnitTurnSpeed(h.hero, 0.01)
+			call IssueImmediateOrder(h.hero, "stop")
+			set charging = true
+			set attacking = false
+			set fade_out = false
+			set tip_formed = false
+			
+			set time_left_buildup1 = 0
+			set start_buildup2 = false
+			set start_buildup3 = false
+			set time_needed_to_charge = (BASE_CHARGE_TIME + LV_CHARGE_TIME*h.optionA.integer[1])/h.getSpdBonus()
+			if time_needed_to_charge < 4 then //run buildup 3 with offset
+				call StartSound(buildup3)
+				call SetSoundPosition(buildup3, h.x, h.y, 0)
+				call SetSoundPlayPosition(buildup3, R2I(4600-time_needed_to_charge*1000))
+				set start_buildup2 = true
+				set start_buildup3 = true
+			elseif time_needed_to_charge < 4.374 then //run buildup 2 with offset then buildup 3
+				call StartSound(buildup2)
+				call SetSoundPosition(buildup2, h.x, h.y, 0)
+				call SetSoundPlayPosition(buildup1, R2I(5000-time_needed_to_charge*1000))
+				set start_buildup2 = true
+				set buildup2_t = 5-time_needed_to_charge
+			elseif time_needed_to_charge < 5.224 then //run buildup 1 with offset then 2 and 3
+				call StartSound(buildup1)
+				call SetSoundPosition(buildup1, h.x, h.y, 0)
+				call SetSoundPlayPosition(buildup1, R2I(5850-time_needed_to_charge*1000))
+				set time_left_buildup1 = (GetSoundDuration(buildup1)-5850+time_needed_to_charge*1000)*.001
+			else
+				call StartSound(buildup1)
+				call SetSoundPosition(buildup1, h.x, h.y, 0)
+				set time_left_buildup1 = GetSoundDuration(buildup1)*.001
+			endif
+			
+		elseif on and not attacking and charging then //check charging because you dont want an infinite loop
+			call IssueImmediateOrderById(h.hero, 852177)
+			call IssueImmediateOrderById(h.hero, UNIMMOLATION)
+		endif
+		//movespeed turnspeed set low
+    endmethod
+	private static method stop takes nothing returns nothing
+		local thistype this = GetUnitUserData(GetTriggerUnit())
+        if 0!=.h and GetIssuedOrderId() == UNIMMOLATION then
+			if on and not attacking then
+				if null!=buildup_timer then
+					call PauseTimer(buildup_timer)
+					call DestroyTimer(buildup_timer)
+				endif
+				call StopSound(buildup1, false, true)
+				call StopSound(buildup2, false, true)
+				call StopSound(buildup3, false, true)
+				set attacking = true
+				set charging = false
+				call IssueImmediateOrder(h.hero, "stop")
+				if not overhead then
+					call SetUnitTimeScale(h.hero, 0.8975/ATTACK_TIME)
+					call SetUnitAnimation(h.hero, "spell throw")
+					if tip_formed then
+						call StartSound(clap)
+					endif
+					call AttachSoundToUnit(clap, h.hero)
+					call SetSoundVolume(swing, 48+R2I(48*charge_time/max_charge_time))
+				else
+					call SetUnitTimeScale(h.hero, 0.8/ATTACK_TIME)
+					call SetUnitAnimation(h.hero, "attack slam")
+					call SetSoundVolume(swing, 68+R2I(68*charge_time/max_charge_time))
+					call BlzSetSpecialEffectScale(blade.effect[0], 0)
+				endif
+				call StartSound(swing)
+				call AttachSoundToUnit(swing, h.hero)
+				call SetUnitTurnSpeed(h.hero, 0)
+				call h.hold(true)
+				set t = 0
+				
+				call StopSound(buildup3, false, true)
+			endif
+		endif
+	endmethod
+    
+    private static method expire takes nothing returns boolean
+        local thistype this = thistype(Timer.expired).first
+		local real a
+		local real pitch
+		local integer i
+		local real x1
+		local real y1
+		local real time_needed_to_charge
+		local string clap_attachment_Table
+		local real overhead_distance
+		local real parabolaz
+		local integer num_of_explosions
+		local real dist_between_explosions
+		local real projected_mana_cost
+        loop
+            set this = id[this]
+			
+			//build table of sfx, adjust angle and position
+			//if t > max charge then put on the little gold thing
+			if on then
+			if h.isAlive() then
+				if (not Bloom[h].is_in_field  or attacking) and not breath_disabled then
+					set breath_disabled = true
+					call h.disableSkill(Breath.SPELLID)
+				elseif not attacking and Bloom[h].is_in_field and breath_disabled then
+					set breath_disabled = false
+					call h.enableSkill(Breath.SPELLID)
+				endif
+				
+				set pitch = 0
+				//blade position loop + damage
+				if not attacking or overhead then
+					set a = Deg2Rad(GetUnitFacing(h.hero))-pi
+					if attacking and t < ATTACK_TIME then
+						set pitch = 3.22885*(t / ATTACK_TIME)
+					endif
+				elseif t < ATTACK_TIME then //not overhead
+					set a = Deg2Rad(GetUnitFacing(h.hero))-pi - (6.28318+0.174533)*(t / ATTACK_TIME)
+					call dealDamageSwing(a)
+				else
+					set a = 0
+				endif
+				
+				if not overhead or not attacking then
+					set x1 = h.x + 32*Cos(a - 1.309)
+					set y1 = h.y + 32*Sin(a - 1.309)
+				else
+					set x1 = h.x
+					set y1 = h.y
+				endif
+				//create effects
+				if charging then
+					
+					set charge_time = charge_time + TICK32 * h.getSpdBonus()
+					set projected_mana_cost = MANA_COST * charge_time/max_charge_time
+					
+					if projected_mana_cost > MANA_COST then
+						set projected_mana_cost = MANA_COST
+						set charge_time = max_charge_time
+					endif
+					
+					if spent_mana < projected_mana_cost then
+						call h.manacost(projected_mana_cost - spent_mana, false)
+						set spent_mana = projected_mana_cost
+					endif
+					
+					set sfx_t = sfx_t + TICK32 * h.getSpdBonus()
+					if sfx_t > TIME_PER_SFX then
+						loop
+							exitwhen sfx_t < TIME_PER_SFX
+							set blade.effect[sfx_hi] =  AddSpecialEffect(BLADE_SFX,0,0)
+							set sfx_hi = sfx_hi + 1
+							set sfx_t = sfx_t - TIME_PER_SFX
+						endloop
+					endif
+					
+					set t = t + TICK32 * h.getSpdBonus()
+					if t > max_charge_time then
+						set tip_formed = true
+						set blade.effect[sfx_hi] =  AddSpecialEffect(TIP_SFX,0,0)
+						set sfx_hi = sfx_hi + 1
+						set charging = false
+					endif
+
+					if t > time_left_buildup1 and not start_buildup2 then
+						call StopSound(buildup1, false, true)
+						call StartSound(buildup2)
+						call AttachSoundToUnit(buildup2, h.hero)
+						set start_buildup2 = true
+						set buildup2_t = 0
+						
+						set buildup_timer = CreateTimer()
+						call TimerStart(buildup_timer, .37374, true, function thistype.buildupCheck)
+						set this_struct.integer[GetHandleId(buildup_timer)] = this
+					endif
+				elseif attacking then
+					set t = t + TICK32
+
+					if not tip_formed then
+						set tip_formed = true
+						set blade.effect[sfx_hi] =  AddSpecialEffect(TIP_SFX,0,0)
+						set sfx_hi = sfx_hi + 1
+					endif
+					
+					if t > ATTACK_TIME and not fade_out then //fade out early
+						set fade_out = true
+						if overhead then
+							if not (charge_time < max_charge_time) then
+								call StartSound(clap)
+							endif
+							call SetSoundVolume(slam, 60+R2I(60*charge_time/max_charge_time))
+							call StartSound(slam)
+							call AttachSoundToUnit(clap, h.hero)
+							call dealDamageOverhead()
+
+							set num_of_explosions = R2I(((sfx_hi-1) / 6) + 0.9)
+							set dist_between_explosions = (charge_time*DISTANCE_PER_SEC)/num_of_explosions
+							set i = 1
+							loop
+								exitwhen i > num_of_explosions
+								call DestroyEffect(AddSpecialEffect(OVERHEAD_SFX, x1 - (-32+i*dist_between_explosions)*Cos(a), y1 - (-32+i*dist_between_explosions)*Sin(a)))
+								set i = i+1
+							endloop
+						endif
+						set i = 0
+						loop
+							exitwhen i == sfx_hi
+							
+							call DestroyEffect(blade.effect[i])
+							
+							set i = i+1
+						endloop
+						set sfx_hi = 0
+					endif
+					
+					if t > ATTACK_TIME + 0.25 then
+						set attacking = false
+						
+						set on = false
+						call h.hold(false)
+						call SetUnitTimeScale(h.hero, 1)
+
+						set event_herodata = this
+						call checkManaCosts()
+						
+						call AddUnitAnimationProperties(h.hero, "upgrade", false)
+						call AddUnitAnimationProperties(h.hero, "ready", false)
+						if not Breath[h].on then
+							call SetUnitAnimation(h.hero, "stand ready")
+							call QueueUnitAnimation(h.hero, "stand")
+							set h.msbonus = 1
+							call SetUnitMoveSpeed(h.hero, GetUnitDefaultMoveSpeed(h.hero))
+							call SetUnitTurnSpeed(h.hero, GetUnitDefaultTurnSpeed(h.hero))
+						else
+							call AddUnitAnimationProperties(h.hero, "defend", true)
+							call QueueUnitAnimation(h.hero, "stand ready")
+							call QueueUnitAnimation(h.hero, "stand upgrade")
+							call QueueUnitAnimation(h.hero, "stand defend")
+							call SetUnitTurnSpeed(h.hero, .05)
+						endif
+						if breath_disabled then
+							set breath_disabled = false
+							call h.enableSkill(Breath.SPELLID)
+						endif
+						call h.orderStop()
+						
+						if disabled then
+							set disabled = false
+							call h.enableSkill(WaxingMoonlightDance.SPELLID)
+							call h.enableSkill(LotusFire.SPELLID)
+						endif
+						
+						if not overhead then
+							call flushDamagedUnits()
+						endif			
+					endif
+				endif
+
+				set i = 0
+				loop
+					exitwhen i == sfx_hi
+					if not overhead then
+						call BlzSetSpecialEffectPosition(blade.effect[i], x1 + i*DISTANCE_PER_SFX*Cos(a), y1 + i*DISTANCE_PER_SFX*Sin(a), 48)
+					elseif attacking then
+						//weird numbers like 2.4 or 0.8333 are minor adjustments since quick movement isnt perfect
+						set overhead_distance = i*DISTANCE_PER_SFX - (i*DISTANCE_PER_SFX*2*(t / ATTACK_TIME))-32
+						if i==0 then
+							set parabolaz = 64 //- 128*(t / ATTACK_TIME)
+						else
+							set parabolaz = 64+ParabolaZ(64 - (64*i/sfx_hi), 0, 32+i*DISTANCE_PER_SFX, 1, t / ATTACK_TIME) //i*DISTANCE_PER_SFX*2, i*DISTANCE_PER_SFX*2*(t / ATTACK_TIME))
+						endif
+						call BlzSetSpecialEffectPosition(blade.effect[i], x1 + overhead_distance*Cos(a), y1 + overhead_distance*Sin(a), parabolaz)
+						call BlzSetSpecialEffectPitch(blade.effect[i], pitch)
+						
+					endif
+					call BlzSetSpecialEffectYaw(blade.effect[i], a-1.57079)
+					
+					set i = i+1
+				endloop
+			else
+				call IssueImmediateOrderById(h.hero, UNIMMOLATION)
+				set on = false
+
+				set i = 0
+				loop
+					exitwhen i == sfx_hi
+					call DestroyEffect(blade.effect[i])
+					set i = i+1
+				endloop
+				set sfx_hi = 0
+
+				set sfx_t = 0
+				set t = 0
+				set charging = false
+
+				set h.msbonus = 1
+				call AddUnitAnimationProperties(h.hero, "upgrade", false)
+				call AddUnitAnimationProperties(h.hero, "ready", false)
+				call AddUnitAnimationProperties(h.hero, "defend", false)
+				call SetUnitTimeScale(h.hero, 1)
+				call SetUnitMoveSpeed(h.hero, GetUnitDefaultMoveSpeed(h.hero))
+				call SetUnitTurnSpeed(h.hero, GetUnitDefaultTurnSpeed(h.hero))
+
+				if attacking then
+					call h.hold(false)
+				endif
+
+				set attacking = false
+				set fade_out = false
+				set tip_formed = false
+				call StopSound(buildup1, false, true)
+				call StopSound(buildup2, false, true)
+				call StopSound(buildup3, false, true)
+				set start_buildup2 = false
+				set start_buildup3 = false
+				set buildup2_t = 0
+				set overhead = false
+				set charge_time = 0
+				call flushDamagedUnits()
+
+				if disabled then
+					set disabled = false
+					call h.enableSkill(WaxingMoonlightDance.SPELLID)
+					call h.enableSkill(LotusFire.SPELLID)
+				endif
+				if breath_disabled then
+					set breath_disabled = false
+					call h.enableSkill(Breath.SPELLID)
+				endif
+
+				set spent_mana = 0
+
+				if null!=buildup_timer then
+					call PauseTimer(buildup_timer)
+					call DestroyTimer(buildup_timer)
+				endif
+			endif
+			endif
+			
+            set this = Timer(.timer).next
+            exitwhen this == 0
+        endloop
+        return true
+    endmethod
+	
+	static method buildupCheck takes nothing returns nothing
+		local timer expired = GetExpiredTimer()
+		local thistype this = this_struct.integer[GetHandleId(expired)]
+		local real time_needed_to_charge = (BASE_CHARGE_TIME + LV_CHARGE_TIME*h.optionA.integer[1] - t)/h.getSpdBonus()
+
+		if time_needed_to_charge < 4 and not start_buildup3 then
+			call StopSound(buildup2, false, true)
+			if not attacking then
+				call StartSound(buildup3)
+				call AttachSoundToUnit(buildup3, h.hero)
+			endif
+			set start_buildup3 = true
+		endif
+
+		set expired = null
+	endmethod
+	
+	method dealDamageSwing takes real a returns nothing
+		local unit fog
+		call GroupEnumUnitsInRange(grp, h.x, h.y, charge_time*DISTANCE_PER_SEC, null)
+		loop
+			set fog = FirstOfGroup(grp)
+			exitwhen null == fog
+			if not IsUnitInGroup(fog, damaged_units) and IsUnitEnemy(fog, h.owner) and EnemyData[fog].is_alive then
+				if AngleDifferenceRad(a, Atan2(GetUnitY(fog)-h.y, GetUnitX(fog)-h.x)) < 0.2181662  then//12.5 degrees
+					call GroupAddUnit(damaged_units, fog)
+					call h.damage(fog, charge_time*DAMAGE_PER_SEC*h.getPowBonus())
+					call Bloom[h].addUnit(fog)
+					if EnemyData[fog].is_alive then
+						call Debuff.hitstun(fog, HITSTUN-.t, true, h.hero)
+						call Debuff.hitstunFreeze(fog, HITSTUN_F)
+						call SetUnitX(fog, GetUnitX(fog)+(KNOCKBACK*Cos(a)))
+						call SetUnitY(fog, GetUnitY(fog)+(KNOCKBACK*Sin(a)))
+					endif
+				endif
+			endif
+			
+			call GroupRemoveUnit(grp, fog)
+		endloop
+	endmethod
+	
+	method dealDamageOverhead takes nothing returns nothing
+		local unit fog
+		local real a = Deg2Rad(GetUnitFacing(h.hero))
+		local real ka
+		call LineGroup(grp, h.x, h.y, h.x + ((charge_time*DISTANCE_PER_SEC)*Cos(a)), h.y + ((charge_time*DISTANCE_PER_SEC)*Sin(a)), OVERHEAD_WIDTH)
+		loop
+			set fog = FirstOfGroup(grp)
+			exitwhen null == fog
+			
+			if IsUnitEnemy(fog, h.owner) and EnemyData[fog].is_alive then
+				call h.damage(fog, charge_time*DAMAGE_PER_SEC*h.getPowBonus()*OVERHEAD_BONUS)
+				call Bloom[h].addUnit(fog)
+				if EnemyData[fog].is_alive then
+					call Debuff.hitstun(fog, 5, true, h.hero)
+					call Debuff.hitstunFreeze(fog, 1)
+					if SignedAngleDifferenceRad(a, Atan2(GetUnitY(fog)-h.y, GetUnitX(fog)-h.x)) < 0 then
+						set ka = a-1.5708
+					else
+						set ka = a+1.5708
+					endif
+					call SetUnitX(fog, GetUnitX(fog)+(KNOCKBACK*Cos(ka)))
+					call SetUnitY(fog, GetUnitY(fog)+(KNOCKBACK*Sin(ka)))
+				endif
+			endif
+			
+			call GroupRemoveUnit(grp, fog)
+		endloop
+	endmethod
+	
+	method flushDamagedUnits takes nothing returns nothing
+		local unit fog
+		loop
+			set fog = FirstOfGroup(damaged_units)
+			exitwhen null == fog
+			
+			call GroupRemoveUnit(damaged_units, fog)
+		endloop
+	endmethod
+
+	static method checkManaCosts takes nothing returns nothing
+		local thistype this = event_herodata
+		local boolean has_mp
+		if 0!=h and not on then
+			set has_mp = not (h.mana < MANA_COST)
+			if has_mp and not sufficient_mana then
+				call h.enableSkill(SPELLID)
+				call h.setAbilityManaVisibility(2, false)
+				set sufficient_mana = true
+			elseif not has_mp and sufficient_mana then
+				call h.disableSkill(SPELLID)
+				set sufficient_mana = false
+				call h.setAbilityManaVisibility(2, true)
+			endif
+		endif
+	endmethod
+    
+    private static method onInit takes nothing returns nothing
+		call CreateRealEventTrigger("event_manacheck", 1.00, function thistype.checkManaCosts)
+        call RegisterSpellEffectEvent(SPELLID, function thistype.run)
+		call RegisterPlayerUnitEvent(EVENT_PLAYER_UNIT_ISSUED_ORDER, function thistype.stop)
+        set expireC = Condition(function thistype.expire)
+        set expireI = thistype.expire
+		set this_struct = Table.create()
+    endmethod
+endstruct
+
+endlibrary

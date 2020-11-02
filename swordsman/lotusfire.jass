@@ -1,0 +1,470 @@
+library SwordsmanLotusFire uses SpellEffectEvent
+
+globals
+	private constant string VANISH_FX = "BlackBlink.mdx"
+	private constant string SLASH_FX = "lotusfireslash.mdx"
+	private constant real SP_INITIAL_COST = 60
+	private constant real SP_DRAIN_START = 12
+	private constant real SP_DRAIN = 5
+	private constant string FIRE_FX = "lotusfire.mdx"
+	private constant string LEAF_FX = "mapleleaves.mdx"
+	private constant string EXIT_FX = "mapleleavesdark.mdx"
+	private constant real RADIUS = 600
+	private constant real DAMAGE_RADIUS = 200
+	private constant real DPS = 2.5
+	private constant string BURN_FX = "lotusfireburn.mdx"
+	//private constant string ICON_ON = ""
+	//private constant string ICON_OFF = ""
+endglobals
+
+struct LotusFire extends array
+    implement TimerHead
+	static constant integer SPELLID = 'A037' //remember set h.disabled_skills.integer[SPELLID] = 0
+	private static constant real DPS_TICK = DPS * TICK32
+	private static constant real SP_DRAIN_TICK = SP_DRAIN*TICK32
+	private static constant real RADIUS_SQUARED = RADIUS*RADIUS
+    private Timer timer
+    private static boolexpr expireC
+    private static integer expireI
+	private static group swap = CreateGroup()
+	//private static group swap2 = CreateGroup()
+    private HeroData h
+	boolean on
+	Table burn_fx
+	Table fire_fx
+	Table fire_x
+	Table fire_y
+	Table fire_damage
+	Table slash_fx
+	Table slash_fx2
+	Table slash_fx3
+	Table unit_damage
+	Table clone
+	Table clone_t
+	Table clone_fx
+	
+	boolean disabled
+	boolean explode
+	boolean slash_countdown
+	boolean enough_sp
+	real t
+	real sp_t
+	effect fog_fx
+    integer alpha
+	integer clone_hi
+	integer fire_hi
+	integer slash_fx_hi
+	group units_in_range
+	group affected_units
+	image whitesplat
+	boolean fully_active
+	private real sp_at_start
+    boolean played_animation
+	
+    public static method initialize takes thistype this returns nothing
+        set .h = this
+        set .timer = Timer.create(TICK32, expireC, expireI)
+        call add(.timer)
+        set id[.timer] = this
+		set on = false
+		set burn_fx = Table.create()
+		set fire_fx = Table.create()
+		set fire_x = Table.create()
+		set fire_y = Table.create()
+		set clone =  Table.create()
+		set clone_t = Table.create()
+		set slash_fx = Table.create()
+		set slash_fx2= Table.create()
+		set slash_fx3= Table.create()
+		set clone_hi = 0
+		set clone_fx = Table.create()
+		set unit_damage = Table.create()
+		set fire_damage = Table.create()
+		set disabled = false
+		set fire_hi = 0
+		set explode = false
+		set t = 0
+		set whitesplat = CreateImageSimple("lotusfiresplat.blp", /*2.375*/2.375*RADIUS, 0,0, 0, true, 1)
+		call SetImageColor(whitesplat, 0,0,0,0)
+		set fog_fx = AddSpecialEffect("grayfog.mdx", 0,0)
+		call BlzSetSpecialEffectAlpha(fog_fx, 0)
+		call BlzSetSpecialEffectScale(fog_fx, RADIUS/225)
+		set alpha = 0
+		set slash_fx_hi = 0
+		set slash_countdown = false
+		set h.disabled_skills.integer[SPELLID] = 0
+		set enough_sp = false
+		set units_in_range = CreateGroup()
+		set affected_units = CreateGroup()
+		set fully_active = false
+		call h.disableSkill(SPELLID)
+    endmethod
+    
+    private static method run takes nothing returns nothing
+        local thistype this = GetUnitUserData(GetTriggerUnit())
+		local unit fog
+		local effect vanish_sfx
+        
+        if 0==.h then
+            call .initialize(this)
+			call IssueImmediateOrder(h.hero, "stop")
+        endif
+		
+		if not on then
+			call SetImageColor(Gust[h].shadow, 255,255,255,0)
+            set played_animation = false
+			set on = true
+			set sp_at_start = h.special
+			call SetUnitTurnSpeed(h.hero, GetUnitDefaultTurnSpeed(h.hero))
+			if Breath[h].on then
+				set Breath[h].on = false
+				call Breath[h].stateCheck(false)
+				//call IssueImmediateOrder(h.hero, "windwalk")
+			endif
+			if not disabled then
+				set disabled = true
+				call h.disableSkill(WaxingMoonlightDance.SPELLID)
+				call h.disableSkill(Eclipse.SPELLID)
+				call h.disableSkill(Breath.SPELLID)
+				call h.disableSkill(Gust.SPELLID)
+			endif
+			call h.disableSkill(SPELLID)
+			call SetUnitVertexColor(h.hero, 0,0,0,0)
+			set h.msbonus = 0.5
+			set vanish_sfx = AddSpecialEffect(VANISH_FX, h.x, h.y)
+			call BlzSetSpecialEffectTimeScale(vanish_sfx, 9)
+			call DestroyEffect(vanish_sfx)
+			call SetUnitPathing(h.hero, false)
+			call UnitAddType(h.hero, UNIT_TYPE_ANCIENT)
+			set sp_t = 0
+		endif
+    endmethod
+	
+	private static method stop takes nothing returns nothing
+        local thistype this = GetUnitUserData(GetTriggerUnit())
+        if 0!=h and GetIssuedOrderId()==852590 then
+            call stopM()
+        endif
+    endmethod
+	
+	private method stopM takes nothing returns nothing
+		set on = false
+		set explode = true
+		call h.hold(true)
+		call SetUnitPathing(h.hero, true)
+		call DestroyEffect(AddSpecialEffect(EXIT_FX, h.x, h.y))
+		call SetUnitVertexColor(h.hero, 255, 255, 255, 255)
+		call IssueImmediateOrder(h.hero, "stop")
+		call SetUnitTurnSpeed(h.hero, 0)
+		set t = 0
+    endmethod
+    
+    private static method expire takes nothing returns boolean
+        local thistype this = thistype(Timer.expired).first
+		local integer i
+		local unit fog
+		local real clone_a
+		local real fogx
+		local real fogy
+		local integer adjusted_alpha
+		local real distance_sq
+		local effect vanish_sfx
+        loop
+            set this = id[this]
+			
+			if not on then
+				
+				if explode then
+					//fx fadeout
+					if fully_active then
+						call h.disableSkill(SPELLID)
+						set fully_active = false
+					endif
+					if alpha - 32 < 0 then
+						set alpha = 0
+					else
+						set alpha = alpha-32
+					endif
+                    
+					call BlzSetSpecialEffectAlpha(fog_fx, R2I(alpha*0.33))
+					call SetImageColor(whitesplat, 255, 255, 255, R2I(alpha*0.925))
+					//stun each affected unit for TICK32
+					if t > 1.0 and t < 3.0 then
+						set t = t + TICK32*h.getSpdBonus()
+						call SetUnitTimeScale(h.hero, h.getSpdBonus())
+					else
+						set t = t + TICK32
+						call SetUnitTimeScale(h.hero, 1)
+
+                        if t > 0 and not played_animation then
+                            set played_animation = true
+                            call SetUnitAnimation(h.hero, "stand victory")
+                        endif
+					endif
+					if t > 4.2 then
+						set t = 0
+						set explode = false
+						set slash_countdown = true
+						//remove sfx, end bloom effects
+						set i = 0
+						loop
+							exitwhen i == fire_hi
+							//destroy flames, calculate damage
+							call DestroyEffect(fire_fx.effect[i])
+							
+							set slash_fx.effect[slash_fx_hi] = AddSpecialEffect(SLASH_FX, fire_x.real[i], fire_y.real[i])
+							call BlzSetSpecialEffectYaw(slash_fx.effect[slash_fx_hi], GetRandomReal(0,7.28))
+							set slash_fx2.effect[slash_fx_hi] = AddSpecialEffect(LEAF_FX, fire_x.real[i], fire_y.real[i])
+							set slash_fx_hi = slash_fx_hi + 1
+							call dealDamage(fire_x.real[i], fire_y.real[i], fire_damage.real[i])
+							
+							set i = i+1
+						endloop
+						set fire_hi = 0
+						loop
+							set fog = FirstOfGroup(Bloom[h].affected_units)
+							exitwhen null==fog
+							//destroy burns, calculate damage
+							//set Bloom[h].countdown.real[GetHandleId(fog)] = 0
+
+							////////////////////////////////////////////////////what if they never received damage from the fog?
+
+							call DestroyEffect(burn_fx.effect[GetHandleId(fog)])
+							
+							set slash_fx.effect[slash_fx_hi] = AddSpecialEffect(SLASH_FX, GetUnitX(fog), GetUnitY(fog))
+							call BlzSetSpecialEffectYaw(slash_fx.effect[slash_fx_hi], GetRandomReal(0,7.28))
+							set slash_fx2.effect[slash_fx_hi] = AddSpecialEffect(LEAF_FX, GetUnitX(fog), GetUnitY(fog))
+							set slash_fx_hi = slash_fx_hi + 1
+							call dealDamage(GetUnitX(fog), GetUnitY(fog), unit_damage.real[GetHandleId(fog)])
+							
+							call GroupAddUnit(swap, fog)
+							call GroupRemoveUnit(Bloom[h].affected_units, fog)
+						endloop
+						set temp = Bloom[h].affected_units
+						set Bloom[h].affected_units = swap
+						set swap = temp
+						
+						call GroupClear(units_in_range)
+                        call GroupClear(affected_units)
+						
+						call h.hold(false)
+						call SetImageColor(Gust[h].shadow, 255,255,255,196)
+						call UnitRemoveType(h.hero, UNIT_TYPE_ANCIENT)
+						call IssueImmediateOrder(h.hero, "stop")
+						call SetUnitTimeScale(h.hero, 1)
+						call SetUnitBlendTime(h.hero, 0.3)
+						
+						call SetUnitTurnSpeed(h.hero, GetUnitDefaultTurnSpeed(h.hero))
+						call QueueUnitAnimation(h.hero, "stand")
+						set h.msbonus = 1
+						if disabled then
+							set disabled = false
+							call h.enableSkill(WaxingMoonlightDance.SPELLID)
+							call h.enableSkill(Eclipse.SPELLID)
+							call h.enableSkill(Breath.SPELLID)
+							call h.enableSkill(Gust.SPELLID)
+						endif
+						call h.enableSkill(SPELLID)
+					endif
+				else
+					if not enough_sp and not (h.special < SP_INITIAL_COST) then
+						//call BJDebugMsg(R2S(h.special) + " > " + R2S(SP_INITIAL_COST))
+						call h.enableSkill(SPELLID)
+						set enough_sp = true
+					elseif enough_sp and h.special < SP_INITIAL_COST then
+						//call BJDebugMsg(R2S(h.special) + " < " + R2S(SP_INITIAL_COST))
+						call h.disableSkill(SPELLID)
+						set enough_sp = false
+					endif
+					
+					if slash_countdown then
+						set t = t + TICK32
+						//destroy slash fxs
+						if t > 0.384 then
+							set slash_countdown = false
+							set i = 0
+							loop
+								exitwhen i==slash_fx_hi
+								call DestroyEffect(slash_fx.effect[i])
+								call DestroyEffect(slash_fx2.effect[i])
+								set i = i+1
+							endloop
+							set slash_fx_hi = 0
+						endif
+					endif
+				endif
+			else
+				//drain sp, if not enough then move on
+				if sp_t < 2 then
+					set h.special = h.special - 0.9375
+					set sp_t = sp_t + TICK32
+				elseif sp_t < SP_DRAIN_START then
+					set sp_t = sp_t + TICK32
+				elseif h.special - SP_DRAIN_TICK < 0 then
+					call IssueImmediateOrderById(h.hero, 852590)
+				else
+					set h.special = h.special - SP_DRAIN_TICK
+				endif
+				//fade in fog effects and follow hero
+				//spawn clone with attack animation and leaves every 0.1 sec on cycling targets, after 1 second remove both
+				//probably make some color function tinting units black in the fog
+				call BlzSetSpecialEffectPosition(fog_fx, h.x, h.y, 128)
+				call SetImagePosition(whitesplat, h.x, h.y, 0)
+				call SetUnitAnimation(h.hero, "stand")
+				if alpha + 4 < 255 then
+					set alpha = alpha + 4
+				else
+					set alpha = 255
+					if not fully_active then
+						set fully_active = true
+						call SetUnitBlendTime(h.hero, 0)
+						call h.enableSkill(SPELLID)
+					endif
+				endif
+				call BlzSetSpecialEffectAlpha(fog_fx, R2I(alpha*0.33))
+				call SetImageColor(whitesplat, 255, 255, 255, R2I(alpha*0.925))
+				//get all units in range
+				call GroupEnumUnitsInRange(grp, h.x, h.y, RADIUS, null)
+				loop
+					set fog = FirstOfGroup(grp)
+					exitwhen null==fog
+					if IsUnitEnemy(fog, h.owner) and EnemyData[fog].is_alive then
+						if not IsUnitInGroup(fog, units_in_range) then
+							call GroupAddUnit(units_in_range, fog)
+							if not IsUnitInGroup(fog, affected_units) then
+								set unit_damage.real[GetHandleId(fog)] = 0
+								call GroupAddUnit(affected_units, fog)
+							endif
+							set burn_fx.effect[GetHandleId(fog)] = AddSpecialEffectTarget(BURN_FX, fog, "origin")
+							if not IsUnitInGroup(fog, Bloom[h].affected_units) then //mark unmarked enemies
+								call Bloom[h].addUnit(fog)
+							endif
+						endif
+					endif
+					call GroupRemoveUnit(grp, fog)
+				endloop
+				//create clone and check for enemies every 0.22s
+				set t = t+TICK32
+				if t > .12 and fully_active then
+					set t = 0
+					set fog = GroupPickRandomUnit(units_in_range)
+					if null != fog then
+						set clone_a = GetRandomReal(-3.14, 3.14)
+						set fogx = GetUnitX(fog) + 100 * Cos(clone_a)
+						set fogy = GetUnitY(fog) + 100 * Sin(clone_a)
+						//if near edge make clones closer to center
+						set distance_sq = (fogx-h.x)*(fogx-h.x) + (fogy-h.y)*(fogy-h.y)
+						if distance_sq > RADIUS_SQUARED - 190000 then
+							set clone_a = Atan2(h.y-fogy, h.x-fogx)+GetRandomReal(-1, 1)
+							set fogx = GetUnitX(fog) + 100 * Cos(clone_a)
+							set fogy = GetUnitY(fog) + 100 * Sin(clone_a)
+						endif
+						set clone.unit[clone_hi] = CreateUnit(Player(0), 'H00F', fogx, fogy, Atan2(fogy-GetUnitY(fog), fogx-GetUnitX(fog)))
+						call UnitAddAbility(clone.unit[clone_hi], 'Aloc')
+						
+						call SetUnitVertexColor(clone.unit[clone_hi],0,0,0,0)
+						call SetUnitColor(clone.unit[clone_hi], ConvertPlayerColor(17))
+						call SetUnitLookAt(clone.unit[clone_hi], "Bone_Head", fog, 0,0,64)
+						if GetRandomInt(0, 2) < 2 then
+							call SetUnitAnimation(clone.unit[clone_hi], "attack")
+						else
+							call SetUnitAnimation(clone.unit[clone_hi], "attack slam")
+							call SetUnitTimeScale(clone.unit[clone_hi], 1.6)
+						endif
+						set clone_fx.effect[clone_hi] = AddSpecialEffect(LEAF_FX, GetUnitX(clone.unit[clone_hi]), GetUnitY(clone.unit[clone_hi]))
+						call BlzSetSpecialEffectTimeScale(clone_fx.effect[clone_hi], 0.5)
+						set clone_t.real[clone_hi] = 0
+						
+						set clone_hi=clone_hi+1
+						set fog = null
+					endif
+				endif
+			endif
+			//clone alpha loop
+			set i = 0
+			loop
+				exitwhen i >= clone_hi
+				set clone_t.real[i] = clone_t.real[i] + TICK32
+				if clone_t.real[i] > 0.25 then
+					call SetUnitVertexColor(clone.unit[i],96,96,96,255)
+				endif
+				if clone_t.real[i] > 0.75 then
+					call RemoveUnit(clone.unit[i])
+					call DestroyEffect(clone_fx.effect[i])
+					call spliceClone(i)
+					set i = i-1
+				endif
+				set i=i+1
+			endloop
+			
+			//tint/distance check loop
+			loop
+				set fog = FirstOfGroup(units_in_range)
+				exitwhen null==fog
+				
+				if EnemyData[fog].is_alive then
+					set fogx = GetUnitX(fog)
+					set fogy = GetUnitY(fog)
+					set distance_sq = (fogx-h.x)*(fogx-h.x) + (fogy-h.y)*(fogy-h.y)
+					if distance_sq < RADIUS_SQUARED then
+						set unit_damage.real[GetHandleId(fog)] = unit_damage.real[GetHandleId(fog)] + DPS_TICK*h.getPowBonus()
+						call GroupAddUnit(swap, fog)
+					else
+						call DestroyEffect(burn_fx.effect[GetHandleId(fog)])
+					endif
+				else
+					call DestroyEffect(burn_fx.effect[GetHandleId(fog)])
+				endif
+				call GroupRemoveUnit(units_in_range, fog)
+			endloop
+			set temp = units_in_range
+			set units_in_range = swap
+			set swap = temp
+			
+            set this = Timer(.timer).next
+            exitwhen this == 0
+        endloop
+        return true
+    endmethod
+	
+	method spliceClone takes integer i returns nothing
+		set clone.unit[i] = clone.unit[clone_hi-1]
+		set clone_t.real[i] = clone_t.real[clone_hi-1]
+		set clone_fx.effect[i] = clone_fx.effect[clone_hi-1]
+		set clone_hi = clone_hi -1
+	endmethod
+	
+	method addFlame takes real x, real y, real stored_damage returns nothing
+		set fire_fx.effect[fire_hi] = AddSpecialEffect(FIRE_FX, x, y)
+		call BlzSetSpecialEffectPosition(fire_fx.effect[fire_hi], x, y, 36)
+		set fire_x.real[fire_hi] = x
+		set fire_y.real[fire_hi] = y
+		set fire_damage.real[fire_hi] = stored_damage
+		set fire_hi = fire_hi + 1
+	endmethod
+	
+	method dealDamage takes real x, real y, real damage returns nothing
+		local unit fog
+		call GroupEnumUnitsInRange(grp, x, y, DAMAGE_RADIUS, null)
+		call BJDebugMsg(R2S(damage))
+		loop
+			set fog = FirstOfGroup(grp)
+			exitwhen null == fog
+			
+			if IsUnitEnemy(fog, h.owner) and EnemyData[fog].is_alive then
+				call h.damage(fog, damage)
+			endif
+			
+			call GroupRemoveUnit(grp, fog)
+		endloop
+	endmethod
+    
+    private static method onInit takes nothing returns nothing
+        call RegisterSpellEffectEvent(SPELLID, function thistype.run)
+		call RegisterPlayerUnitEvent(EVENT_PLAYER_UNIT_ISSUED_ORDER, function thistype.stop)
+        set expireC = Condition(function thistype.expire)
+        set expireI = thistype.expire
+    endmethod
+endstruct
+
+endlibrary

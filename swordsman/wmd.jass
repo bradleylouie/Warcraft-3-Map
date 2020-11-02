@@ -1,0 +1,485 @@
+library SwordsmanWaxingMoonlightDance uses SpellEffectEvent
+
+globals
+	private constant real BASE_DAMAGE = 6
+	private constant real RADIUS = 190
+	private constant real MANA_COST = 4.997
+	private constant real SUCCESSIVE_COST_RATIO = 0.5
+	private constant real ATTACK_TIME = 0.5
+	private constant real ATTACK_DELAY = 0.05
+	private constant string EFFECT = "twister slash.mdx"
+	private constant string EXPANDED_LOTUS_FX = "lotusauraexpanded.mdx"
+	private constant real KNOCKBACK = 32
+	private constant real HITSTUN = 1
+	private constant real HITSTUN_F = 0.2
+	private constant real CONSECUTIVE_PERIOD = 0.5
+endglobals
+
+struct WaxingMoonlightDance extends array
+	implement KeyDown
+    implement TimerHead
+	static constant integer SPELLID = 'A033'
+    private Timer timer
+	private static real array DAMAGE_STEPS[8]
+	private static real array HITSTUN_STEPS[8]
+	private static real array HITSTUN_F_STEPS[8]
+	private static real array KNOCKBACK_STEPS[8]
+	private static Sound array TAIKO_SND[9]
+	private static Sound array HIT_SND[3]
+	private static real ANIMATION_SPEED = 0.666 / ATTACK_TIME
+	private static real FADE_TIME = 0.05
+	private static integer HERO_ALPHA_TICK = R2I((255/FADE_TIME)*TICK32)
+	private static integer MOON_ALPHA_TICK = R2I((360 / (ATTACK_TIME-ATTACK_DELAY))*TICK32 )
+	private static real SPIN_TICK = (6.70678 / ATTACK_TIME)*TICK32 
+    private static boolexpr expireC
+    private static integer expireI
+    private HeroData h
+	//private Sound attack_sound
+	boolean on
+	private unit attack_clone
+	private unit looking_dummy
+	private real t
+	private real initial_angle
+	private real radians_spun
+	private effect twister_effect
+	private integer hero_alpha
+	private boolean queue_attack
+	private Table moon_image
+	private integer moon_alpha
+	private integer current_phase
+	private boolean damage_dealt
+	private boolean use_interim
+	private real interim_time
+	private boolean played_sound
+	private group damaged
+	private real st_x //stationary x
+	private real st_y
+	boolean expand_field
+	boolean disabled
+	boolean allow_press
+	private integer hit_enemies
+	private boolean first_cycle_complete
+	private boolexpr enough_mana
+	boolean sufficient_mana
+
+	private static method onInit takes nothing returns nothing
+        call RegisterSpellEffectEvent(SPELLID, function thistype.run)
+		call CreateRealEventTrigger("event_manacheck", 1.00, function thistype.checkManaCosts)
+        set expireC = Condition(function thistype.expire)
+        set expireI = thistype.expire
+		set DAMAGE_STEPS[0] = 0
+		set DAMAGE_STEPS[1] = 1.5 //+1.5 
+		set DAMAGE_STEPS[2] = 4	  //+2.5 //+1
+		set DAMAGE_STEPS[3] = 8   //+4   //+1.5
+		set DAMAGE_STEPS[4] = 14  //+6   //+2
+		set DAMAGE_STEPS[5] = 8
+		set DAMAGE_STEPS[6] = 4
+		set DAMAGE_STEPS[7] = 1.5
+
+		set HITSTUN_STEPS[0] = 0.7
+		set HITSTUN_STEPS[1] = 1
+		set HITSTUN_STEPS[2] = 1.3
+		set HITSTUN_STEPS[3] = 1.6
+		set HITSTUN_STEPS[4] = 2
+		set HITSTUN_STEPS[5] = 1.6
+		set HITSTUN_STEPS[6] = 1.3
+		set HITSTUN_STEPS[7] = 1
+
+		set HITSTUN_F_STEPS[0] = 0.12
+		set HITSTUN_F_STEPS[1] = 0.16
+		set HITSTUN_F_STEPS[2] = 0.2
+		set HITSTUN_F_STEPS[3] = 0.24
+		set HITSTUN_F_STEPS[4] = 0.5
+		set HITSTUN_F_STEPS[5] = 0.24
+		set HITSTUN_F_STEPS[6] = 0.2
+		set HITSTUN_F_STEPS[7] = 0.16
+
+		set KNOCKBACK_STEPS[0] = 15
+		set KNOCKBACK_STEPS[1] = 20
+		set KNOCKBACK_STEPS[2] = 24
+		set KNOCKBACK_STEPS[3] = 32
+		set KNOCKBACK_STEPS[4] = 48
+		set KNOCKBACK_STEPS[5] = 32
+		set KNOCKBACK_STEPS[6] = 24
+		set KNOCKBACK_STEPS[7] = 20
+		
+		set TAIKO_SND[0] = Sound.create("WMDstartdrum.wav", GetSoundFileDuration("WMDstartdrum.wav"), false, true)
+		
+		set TAIKO_SND[1] = Sound.create("WMDbuildupdrum.wav", GetSoundFileDuration("WMDbuildupdrum.wav"), false, true)
+		set TAIKO_SND[2] = Sound.create("WMDbuildupdrum.wav", GetSoundFileDuration("WMDbuildupdrum.wav"), false, true)
+		set TAIKO_SND[3] = Sound.create("WMDbuildupdrum.wav", GetSoundFileDuration("WMDbuildupdrum.wav"), false, true)
+		set TAIKO_SND[4] = Sound.create("WMDclap1.wav", GetSoundFileDuration("WMDclap1.wav"), false, true)
+		set TAIKO_SND[5] = Sound.create("WMDfallingdrum1.wav", GetSoundFileDuration("WMDfallingdrum1.wav"), false, true)
+		//set TAIKO_SND[6] = Sound.create("WMDbuildupdrum.wav", GetSoundFileDuration("WMDbuildupdrum.wav"), false, true)
+		set TAIKO_SND[6] = Sound.create("WMDfallingdrum2.wav", GetSoundFileDuration("WMDfallingdrum2.wav"), false, true)
+		set TAIKO_SND[7] = Sound.create("WMDclap2.wav", GetSoundFileDuration("WMDclap2.wav"), false, true)
+		
+		set TAIKO_SND[8] = Sound.create("WMDinterimdrum.wav", GetSoundFileDuration("WMDinterimdrum.wav"), false, true)
+
+		set HIT_SND[0] = Sound.create("Sound\\Units\\Combat\\MetalLightSliceMetal1.wav", GetSoundFileDuration("Sound\\Units\\Combat\\MetalLightSliceMetal1.wav"), false, true)
+        set HIT_SND[1] = Sound.create("Sound\\Units\\Combat\\MetalLightSliceMetal2.wav", GetSoundFileDuration("Sound\\Units\\Combat\\MetalLightSliceMetal2.wav"), false, true)
+        set HIT_SND[2] = Sound.create("Sound\\Units\\Combat\\MetalLightSliceMetal3.wav", GetSoundFileDuration("Sound\\Units\\Combat\\MetalLightSliceMetal3.wav"), false, true)
+    endmethod
+	
+    
+    public static method initialize takes thistype this returns nothing
+        set .h = this
+        set .timer = Timer.create(TICK32, expireC, expireI)
+        call add(.timer)
+        set id[.timer] = this
+		call regKey($57)
+		set attack_clone = CreateUnit(Player(0), 'H00E', 0, 0, 0)
+		set looking_dummy = CreateUnit(Player(0), 'h002', 0, 0, initial_angle)
+		call UnitAddAbility(attack_clone, 'Aloc')
+		call SetUnitVertexColor(attack_clone,0,0,0,0)
+		call SetUnitColor(attack_clone, ConvertPlayerColor(PLAYER_NEUTRAL_AGGRESSIVE))
+		call SetUnitLookAt(attack_clone, "Bone_Head", looking_dummy, 0,0,64)
+		call SetUnitBlendTime(attack_clone, 0.2)
+		//set attack_sound = Sound.create("Buildings\\Other\\FountainOfLife\\FountainOfLifeWhat1.wav", GetSoundFileDuration("Buildings\\Other\\FountainOfLife\\FountainOfLifeWhat1.wav"), false, true)
+		
+		set moon_image = Table.create()
+		set moon_image.image[0] = CreateImageSimple("WMD(0).blp", 1.85*RADIUS, 0, 0, 0, true, 2)
+		set moon_image.image[1] = CreateImageSimple("WMD(1).blp", 1.85*RADIUS, 0, 0, 0, true, 2)
+		set moon_image.image[2] = CreateImageSimple("WMD(2).blp", 1.85*RADIUS, 0, 0, 0, true, 2)
+		set moon_image.image[3] = CreateImageSimple("WMD(3).blp", 1.85*RADIUS, 0, 0, 0, true, 2)
+		set moon_image.image[4] = CreateImageSimple("WMD(4).blp", 1.85*RADIUS, 0, 0, 0, true, 2)
+		set moon_image.image[5] = CreateImageSimple("WMD(5).blp", 1.85*RADIUS, 0, 0, 0, true, 2)
+		set moon_image.image[6] = CreateImageSimple("WMD(6).blp", 1.85*RADIUS, 0, 0, 0, true, 2)
+		set moon_image.image[7] = CreateImageSimple("WMD(7).blp", 1.85*RADIUS, 0, 0, 0, true, 2)
+		call SetImageColor(moon_image.image[0], 0,0,0,0)
+		call SetImageColor(moon_image.image[1], 0,0,0,0)
+		call SetImageColor(moon_image.image[2], 0,0,0,0)
+		call SetImageColor(moon_image.image[3], 0,0,0,0)
+		call SetImageColor(moon_image.image[4], 0,0,0,0)
+		call SetImageColor(moon_image.image[5], 0,0,0,0)
+		call SetImageColor(moon_image.image[6], 0,0,0,0)
+		call SetImageColor(moon_image.image[7], 0,0,0,0)
+        
+		set current_phase = 0
+		set use_interim = false
+		set interim_time = 0
+		set disabled = false
+		set queue_attack = false
+		set allow_press = true
+		set damaged = CreateGroup()
+		set h.disabled_skills.integer[SPELLID] = 0
+		set first_cycle_complete = false
+		set sufficient_mana = true
+        //call h.setAbilityCounter(0, I2S(R2I((BASE_DAMAGE+DAMAGE_STEPS[current_phase])*10))+"%")
+    endmethod
+    
+    private static method run takes nothing returns nothing
+        local thistype this = GetUnitUserData(GetTriggerUnit())
+		
+        if 0==.h then
+            call .initialize(this)
+        endif
+		if not on and ((h.mana > MANA_COST) or (first_cycle_complete and h.mana > MANA_COST*SUCCESSIVE_COST_RATIO)) then
+			set on = true
+			if not disabled then
+				set disabled = true
+				call h.disableSkill(Gust.SPELLID)
+				call h.disableSkill(Breath.SPELLID)
+				call h.disableSkill(Eclipse.SPELLID)
+				call h.disableSkill(LotusFire.SPELLID)
+			endif
+			call start()
+			call h.resendSmartOrder()
+		else
+			set queue_attack = true
+			call h.disableSkill(SPELLID)
+			set allow_press = false
+			call h.resendSmartOrder()
+		endif
+    endmethod
+	
+	method start takes nothing returns nothing
+		set queue_attack = false
+		if allow_press then
+			call h.disableSkill(SPELLID)
+			set allow_press = false
+		endif
+		set damage_dealt = false
+		set hit_enemies = 0
+		if first_cycle_complete then
+			call h.manacost(MANA_COST*SUCCESSIVE_COST_RATIO, false)
+		else
+			call h.manacost(MANA_COST, false)
+		endif
+		call SetUnitX(attack_clone, h.x)
+		call SetUnitY(attack_clone, h.y)
+		
+		if current_phase != 4 and current_phase != 0 then
+			call SetUnitAnimation(attack_clone, "attack")
+			call SetUnitTimeScale(attack_clone, ANIMATION_SPEED)
+		else
+			call SetUnitAnimation(attack_clone, "attack slam")
+			call SetUnitTimeScale(attack_clone, ANIMATION_SPEED*1.25)
+		endif
+		set initial_angle = Deg2Rad(GetUnitFacing(h.hero))
+		set twister_effect = AddSpecialEffect(EFFECT, h.x, h.y)
+		call BlzSetSpecialEffectScale(twister_effect, 0.85)
+		call BlzSetSpecialEffectTimeScale(twister_effect, (1/ATTACK_TIME))
+		call BlzSetSpecialEffectYaw(twister_effect, initial_angle)
+		set h.msbonus = 1
+		call SetUnitTurnSpeed(h.hero, GetUnitDefaultTurnSpeed(h.hero))
+
+        //if current_phase+1 > 7 then
+        //    call h.setAbilityCounter(0, I2S(R2I((BASE_DAMAGE+DAMAGE_STEPS[0])*10))+"%")
+        //else
+        //    call h.setAbilityCounter(0, I2S(R2I((BASE_DAMAGE+DAMAGE_STEPS[current_phase+1])*10))+"%")
+        //endif
+
+		set t = 0
+		set radians_spun = 0
+		set hero_alpha = 255
+		set moon_alpha = 360 //add delay to fadeout
+		set played_sound = false
+		if interim_time == 0 then
+			set use_interim = false
+		endif
+	endmethod
+    
+    private static method expire takes nothing returns boolean
+        local thistype this = thistype(Timer.expired).first
+		local integer bloom_id
+        loop
+            set this = id[this]
+
+			if on then
+			if h.isAlive() then
+				set t = t+TICK32
+				call SetUnitX(attack_clone, h.x)
+				call SetUnitY(attack_clone, h.y)
+				
+				set radians_spun = radians_spun - SPIN_TICK
+					
+				call SetUnitX(looking_dummy, h.x+900*Cos(initial_angle + radians_spun))
+				call SetUnitY(looking_dummy, h.y+900*Sin(initial_angle + radians_spun))
+				
+				if t < ATTACK_TIME - FADE_TIME then
+				
+					if hero_alpha - HERO_ALPHA_TICK > 0 then
+						set hero_alpha = hero_alpha - HERO_ALPHA_TICK
+					else
+						set hero_alpha = 0
+					endif
+				else
+					if hero_alpha + HERO_ALPHA_TICK < 255 then
+						set hero_alpha = hero_alpha + HERO_ALPHA_TICK
+					else
+						set hero_alpha = 255
+					endif
+				endif
+				call SetUnitVertexColor(h.hero,hero_alpha,hero_alpha,hero_alpha,hero_alpha)
+				call SetUnitVertexColor(attack_clone,255-hero_alpha,255-hero_alpha,255-hero_alpha,255-hero_alpha)
+				
+				
+				if t > ATTACK_DELAY then //fade out after showing full alpha for a short period
+					if moon_alpha - MOON_ALPHA_TICK > 0 then
+						set moon_alpha = moon_alpha - MOON_ALPHA_TICK
+					else
+						set moon_alpha = 0
+					endif
+					if moon_alpha < 255 then
+						call SetImageColor(moon_image.image[current_phase], 255,255,255,moon_alpha)
+					else
+						call SetImageColor(moon_image.image[current_phase], 255,255,255,255)
+					endif
+					call dealDamage()
+					if not damage_dealt then
+						set st_x = h.x
+						set st_y = h.y
+						set damage_dealt = true
+						call SetImagePosition(moon_image.image[current_phase],st_x,st_y,0)
+						if expand_field then
+							set bloom_id = Bloom[h].occupied_field
+							set Bloom[h].field_expanded.boolean[bloom_id] = true
+							/*if Bloom[h].has_flower.boolean[bloom_id] then
+								call BlzSetSpecialEffectPosition(Bloom[h].field_flower.effect[bloom_id], h.x, h.y, 0)
+							endif*/
+							call DestroyEffect(Bloom[h].field_aura.effect[bloom_id])
+							set Bloom[h].field_aura.effect[bloom_id] = AddSpecialEffect(EXPANDED_LOTUS_FX, h.x, h.y)
+							call BlzSetSpecialEffectPosition(Bloom[h].field_aura.effect[bloom_id], h.x, h.y, 0)
+							call DestroyImage(Bloom[h].field_splat.image[bloom_id])
+							set Bloom[h].field_splat.image[bloom_id] = CreateImageSimple("Textures\\BlackSplat.blp", 2.375*RADIUS, h.x, h.y, 0, true, 0)
+							call SetImageColor(Bloom[h].field_splat.image[bloom_id], 255, 255, 255, 128)
+							set Bloom[h].field_x.real[bloom_id] = h.x
+							set Bloom[h].field_y.real[bloom_id] = h.y
+						endif
+					endif
+				else //move sfx and moon before attack lands
+					call BlzSetSpecialEffectPosition(twister_effect, h.x,h.y,0)
+				endif
+				if not played_sound then
+					if current_phase == 0 and use_interim then
+						if t > 0.300 - interim_time then //end of clacking
+							call TAIKO_SND[8].runPointEx(h.x,h.y,0,48,1)
+							set played_sound = true
+						endif
+					elseif current_phase == 6 then
+						if t > 0.333 - interim_time then //final drum
+							call TAIKO_SND[current_phase].runPointEx(h.x,h.y,0,48,1)
+							set played_sound = true
+						endif
+					elseif current_phase == 7 then
+						if t > 0.315 - interim_time then //first half of clacking
+							call TAIKO_SND[current_phase].runPointEx(h.x,h.y,0,48,1)
+							set played_sound = true
+						endif
+					else //everything else
+						call TAIKO_SND[current_phase].runPointEx(h.x,h.y,0,32,1)
+						set played_sound = true
+					endif
+				endif
+
+				if t > 0.2 and not keydown and not queue_attack then
+					if not allow_press then
+						call h.enableSkill(SPELLID)
+						set allow_press = true
+					endif
+				endif
+
+				if hit_enemies > 4 then
+					set hit_enemies = 4
+				elseif hit_enemies > 0 then
+					set hit_enemies = hit_enemies - 1
+					call HIT_SND[GetRandomInt(0,2)].runPointEx(h.x,h.y,0,16,GetRandomReal(0.9,1.1))
+				endif
+				
+				if t > ATTACK_TIME then
+					call SetUnitTimeScale(attack_clone, 10)
+					call DestroyEffect(twister_effect)
+					call SetImageColor(moon_image.image[current_phase], 0,0,0,0)
+					call SetUnitVertexColor(attack_clone,0,0,0,0)
+					set current_phase = current_phase+1
+					call GroupClear(damaged)
+					if current_phase > 7 then
+						set first_cycle_complete = true
+						set current_phase = 0
+					endif
+					if (queue_attack or keydown) and ((h.mana > MANA_COST) or (first_cycle_complete and h.mana > MANA_COST*SUCCESSIVE_COST_RATIO)) then
+						call start()
+					else
+						set on = false
+						if Breath[h].on then
+							set h.msbonus = 0.15
+							call SetUnitTurnSpeed(h.hero, .05)
+						endif
+						call SetUnitVertexColor(h.hero,255,255,255,255)
+						if disabled then
+							set disabled = false
+							call h.enableSkill(Gust.SPELLID)
+							call h.enableSkill(Breath.SPELLID)
+							call h.enableSkill(Eclipse.SPELLID)
+							call h.enableSkill(LotusFire.SPELLID)
+						endif
+						set queue_attack = false
+						if not allow_press then
+							call h.enableSkill(SPELLID)
+						endif
+					endif
+					set use_interim = true
+					set interim_time = 0
+				endif
+			else //not alive
+				if disabled then
+					set disabled = false
+					call h.enableSkill(Gust.SPELLID)
+					call h.enableSkill(Breath.SPELLID)
+					call h.enableSkill(Eclipse.SPELLID)
+					call h.enableSkill(LotusFire.SPELLID)
+				endif
+				set queue_attack = false
+				if not allow_press then
+					call h.enableSkill(SPELLID)
+				endif
+				set on = false
+				set use_interim = false
+				set first_cycle_complete = false
+				set interim_time = 0
+				call SetUnitVertexColor(h.hero,255,255,255,255)
+				call SetUnitTimeScale(attack_clone, 10)
+				call DestroyEffect(twister_effect)
+				call SetImageColor(moon_image.image[current_phase], 0,0,0,0)
+				call SetUnitVertexColor(attack_clone,0,0,0,0)
+				call GroupClear(damaged)
+			endif
+			else //not on
+				call SetUnitX(looking_dummy, h.x+900*Cos(GetUnitFacing(h.hero)))
+				call SetUnitY(looking_dummy, h.y+900*Sin(GetUnitFacing(h.hero)))
+			endif
+			
+			if use_interim and not on then
+				set interim_time = interim_time + TICK32
+				if interim_time > CONSECUTIVE_PERIOD then
+					set use_interim = false
+					if first_cycle_complete then
+						set first_cycle_complete = false
+						set event_herodata = this
+						call checkManaCosts()
+					endif
+					set current_phase = 0
+				endif
+			endif
+			
+            set this = Timer(.timer).next
+            exitwhen this == 0
+        endloop
+        return true
+    endmethod
+    
+    method dealDamage takes nothing returns nothing
+		local unit fog
+		local real fogx
+		local real fogy
+		call GroupEnumUnitsInRange(grp, st_x, st_y, RADIUS, null)
+		loop
+			set fog  = FirstOfGroup(grp)
+			exitwhen null==fog
+			
+			if not IsUnitInGroup(fog, damaged) and IsUnitEnemy(fog, h.owner) and EnemyData[fog].is_alive then
+				call GroupAddUnit(damaged, fog)
+				call h.damage(fog, (BASE_DAMAGE+DAMAGE_STEPS[current_phase])*h.getPowBonus())
+				call Bloom[h].addUnit(fog)
+				if EnemyData[fog].is_alive then
+					if not damage_dealt then
+						set hit_enemies = hit_enemies + 1
+					endif
+					call Debuff.hitstun(fog, HITSTUN_STEPS[current_phase], true, h.hero)
+					call Debuff.hitstunFreeze(fog, HITSTUN_F_STEPS[current_phase])
+					set fogx = GetUnitX(fog)
+					set fogy = GetUnitY(fog)
+					call quickPolarValue(st_x, st_y, fogx, fogy)
+					call SetUnitX(fog, fogx + KNOCKBACK_STEPS[current_phase] * quick_sin)
+					call SetUnitY(fog, fogy + KNOCKBACK_STEPS[current_phase] * quick_cos)
+				endif
+			endif
+			
+			call GroupRemoveUnit(grp, fog)
+		endloop
+	endmethod
+
+	static method checkManaCosts takes nothing returns nothing
+		local thistype this = event_herodata
+		local boolean has_mp
+		if 0!=h then
+			if first_cycle_complete then
+				set has_mp = not (h.mana < MANA_COST*SUCCESSIVE_COST_RATIO)
+			else
+				set has_mp = not (h.mana < MANA_COST)
+			endif
+			if has_mp and not sufficient_mana then
+				call h.enableSkill(SPELLID)
+				call h.setAbilityManaVisibility(1, false)
+				set sufficient_mana = true
+			elseif not has_mp and sufficient_mana then
+				call h.disableSkill(SPELLID)
+				set sufficient_mana = false
+				call h.setAbilityManaVisibility(1, true)
+			endif
+		endif
+	endmethod
+endstruct
+
+endlibrary

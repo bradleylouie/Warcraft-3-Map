@@ -1,0 +1,106 @@
+library SwordsmanSense uses SpellEffectEvent
+
+globals
+    //private constant integer SPELLID = 'A000'
+	private constant real SLOW_PER_SECOND = .2
+	private constant real MAX_SLOW_SCALE = .15 //*speed
+	private constant real RADIUS = 500
+	private constant real DECAY_TIME = 3
+endglobals
+
+struct Sense extends array
+    implement TimerHead
+    private Timer timer
+	private static constant real TICK_RATE = 0.1
+	private static constant real SLOW_TICK = SLOW_PER_SECOND*TICK_RATE
+    private static boolexpr expireC
+    private static integer expireI
+	private static group swap = CreateGroup()
+    private HeroData h
+	private group affected_enemies
+	//private group decaying_enemies
+	private Table current_slow
+    
+    public static method initialize takes thistype this returns nothing
+        set .h = this
+        set .timer = Timer.create(TICK_RATE, expireC, expireI)
+        call add(.timer)
+        set id[.timer] = this
+		set affected_enemies = CreateGroup()
+		//set decaying_enemies = CreateGroup()
+		set current_slow = Table.create()
+    endmethod
+    
+    
+    private static method expire takes nothing returns boolean
+        local thistype this = thistype(Timer.expired).first
+		local real current_max_slow
+		local unit fog
+		local integer fog_id
+        loop
+            set this = id[this]
+			
+			set current_max_slow = MAX_SLOW_SCALE*h.getSpdBonus()
+			
+			call GroupEnumUnitsInRange(grp, h.x, h.y, RADIUS, null) //units in grp are now considered in range
+			//decay unit loop
+			loop
+				set fog = FirstOfGroup(affected_enemies)
+				exitwhen null==fog
+				set fog_id = GetHandleId(fog)
+				
+				if UnitAlive(fog) then
+					if not IsUnitInGroup(fog, grp) then
+						if current_slow.real[fog_id] - SLOW_TICK > 0 then
+							call Debuff.slow(fog, current_slow.real[fog_id], TICK_RATE)
+							set current_slow.real[fog_id] = current_slow.real[fog_id] - SLOW_TICK
+							call GroupAddUnit(swap, fog)
+						else
+							set current_slow.real[fog_id] = 0
+						endif
+					else
+						call GroupAddUnit(swap, fog)
+					endif
+				endif
+				call GroupRemoveUnit(affected_enemies, fog)
+			endloop
+			set temp = affected_enemies
+			set affected_enemies = swap
+			set swap = temp
+			
+			//gather unit loop
+			loop
+				set fog = FirstOfGroup(grp)
+				exitwhen null==fog
+				set fog_id = GetHandleId(fog)
+				
+				if IsUnitEnemy(fog, h.owner) and UnitAlive(fog) then
+					if IsUnitInGroup(fog, affected_enemies) then
+						if current_slow.real[fog_id] + SLOW_TICK < current_max_slow then
+							set current_slow.real[fog_id] = current_slow.real[fog_id] + SLOW_TICK
+						else
+							set current_slow.real[fog_id] = current_max_slow
+						endif
+						//call BJDebugMsg(R2S(current_slow.real[fog_id]))
+						call Debuff.slow(fog, current_slow.real[fog_id], TICK_RATE)
+					else //new unit to group
+						call GroupAddUnit(affected_enemies, fog)
+						set current_slow.real[fog_id] = SLOW_TICK
+					endif
+				endif
+				call GroupRemoveUnit(grp, fog)
+			endloop
+			
+            set this = Timer(.timer).next
+            exitwhen this == 0
+        endloop
+        return true
+    endmethod
+    
+    private static method onInit takes nothing returns nothing
+        set expireC = Condition(function thistype.expire)
+        set expireI = thistype.expire
+    endmethod
+endstruct
+
+endlibrary
