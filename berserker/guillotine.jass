@@ -1,0 +1,297 @@
+library BerserkerGuillotine uses SpellEffectEvent, Math, BerserkerOverstrain, BerserkerFrenzy
+
+globals
+    private group swap = CreateGroup()
+    private constant integer GUILLOTINE    = 'A007'
+    private constant real CHARGE_TIME      = 4.0  //4s max charge time
+    private constant real DAMAGE           = 20   //200% base damage
+    private constant real CHARGE_DAMAGE    = 16   //200+160+40=400% max damage lv.1
+    private constant real CHARGE_DAMAGE_LV = 4
+    private constant real BONUS_DAMAGE     = 5    //50% damage on kill
+    private constant real AOE              = 215  //225 radius lv.1
+    private constant real AOE_LV           = 10
+    private constant real RANGE            = 125
+    private constant real ATTACK_TIME      = 0.4
+    private constant real COST             = 15
+    private constant real WEAP_SFX_RATE    = 1
+    private constant string ATK_SFX  = "Abilities\\Weapons\\PhoenixMissile\\Phoenix_Missile.mdl"
+    private constant string WEAP_SFX = "Abilities\\Weapons\\VengeanceMissile\\VengeanceMissile.mdl"
+    private constant string SFX      = "Abilities\\Spells\\Orc\\WarStomp\\WarStompCaster.mdl"
+    private constant string KILL_SFX = "Objects\\Spawnmodels\\Orc\\OrcLargeDeathExplode\\OrcLargeDeathExplode.mdl"
+endglobals
+
+struct Guillotine extends array
+    implement TimerHead
+    private Timer timer
+    private static boolexpr expireC
+    private static integer expireI
+    private HeroData h
+    boolean on //hero is charging
+    boolean att//hero is attacking
+    effect wfx //weapon sfx
+    integer chargefx
+    real x
+    real y
+    real a
+    real t      //realtime progress
+    real prog   //modified progress
+    real delay  //turnrate compensation time
+    real cdmg   //current charge damage bonus
+    real sfxt   //timing for the weapon effect
+    real outragedmg
+    real outragerad
+    boolean ani //animation is playing
+    boolean sfx //sfx played
+    boolean cue
+    
+    private static method run takes nothing returns nothing
+        local thistype this = GetUnitUserData(GetTriggerUnit())
+        
+        if 0==.h then
+            set .h = this
+            set .timer = Timer.create(TICK32, expireC, expireI)
+            call add(.timer)
+            set id[.timer] = this
+        endif
+        if .h.busy.boolean[1] then
+            set .cue = TRUE
+        endif
+        if not .on and not .h.busy.boolean[1] then
+            call start(this)
+        endif
+    endmethod
+    
+    private static method start takes thistype this returns nothing
+        call SetUnitPropWindow(.h.hero, 0)
+        call IssueImmediateOrder(.h.hero, "stop")
+        set .chargefx = 0
+        call AddUnitAnimationProperties(.h.hero, "victory", TRUE)
+        call SetUnitTimeScale(.h.hero, 0.5)
+        set .h.charge = TRUE
+        set .h.busy.boolean[2] = TRUE
+        set .on = TRUE
+        set .cdmg = 0
+    endmethod
+    
+    private static method click takes nothing returns nothing
+        local HeroData h = GetUnitUserData(GetTriggerUnit())
+        local thistype this = h
+        local unit u = .h.hero
+        local real x1
+        local real y1
+        local real x2
+        local real y2
+        local real dx1
+        local real dy1
+        local real a1
+        local real a2
+            
+        if .on and (GetIssuedOrderId()==ORDER_SMART) and not .att then
+            set .h.charge = FALSE
+            call AddUnitAnimationProperties(.h.hero, "victory", FALSE)
+            if null == GetOrderTargetUnit() then
+                set x2 = GetOrderPointX()
+                set y2 = GetOrderPointY()
+            else
+                set x2 = GetUnitX(GetOrderTargetUnit())
+                set y2 = GetUnitY(GetOrderTargetUnit())
+            endif
+            call IssueImmediateOrder(GetTriggerUnit(), "stop")
+            
+            set x1 = GetUnitX(u)
+            set y1 = GetUnitY(u)
+            set dx1 = x2-x1
+            set dy1 = y2-y1 //distance hero pos -> click
+            set a1 = mod(Atan2(dy1, dx1)*RADTODEG, 360) //angle of click
+            set a2 = GetUnitFacing(u)
+            
+            //set delay up to 0.25 seconds based on angle difference
+            //this allows unit to face proper direction when attack is finished
+            set .delay = .t+TICK32+0.000726*(Acos(Cos(a1*DEGTORAD-a2*DEGTORAD)))*RADTODEG
+            //set x and y to static distance
+            set .a = a1
+            set .x = x1+RANGE*Cos(a1*DEGTORAD)
+            set .y = y1+RANGE*Sin(a1*DEGTORAD)
+            set .att = TRUE
+            //set charge damage based on time
+            call setChargeDmg(this)
+        endif
+    endmethod
+    
+    static method setChargeDmg takes thistype this returns nothing
+        local integer lv = GetUnitAbilityLevel(.h.hero,GUILLOTINE)
+        local real mdmg
+        set mdmg = CHARGE_DAMAGE+CHARGE_DAMAGE_LV*lv
+        if .prog < CHARGE_TIME then
+            set .cdmg = (mdmg/CHARGE_TIME)*.prog
+        else
+            set .cdmg = mdmg
+        endif
+    endmethod
+    
+    private static method periodic takes nothing returns boolean
+        local thistype this = thistype(Timer.expired).first
+        local real t
+        local unit u
+        local integer lv
+        loop
+            set this = id[this]
+            //queue guillotine after a frenzy attack
+            if not .h.busy.boolean[1] and .cue then
+                set .cue = FALSE
+                call start(.h)
+            endif
+            if .on then
+                set u = .h.hero
+                set .t = .t + TICK32
+                set .prog = .prog + TICK32/2 + TICK32*.h.getSpdBonus()/2
+                //plays an effect every 1 second
+                if not .att and .prog >= WEAP_SFX_RATE*(.chargefx+1) and .chargefx < CHARGE_TIME/WEAP_SFX_RATE then
+                    set .chargefx = .chargefx + 1
+                    call DestroyEffect(AddSpecialEffectTarget(WEAP_SFX, u, "weapon"))
+                elseif .att then
+                    if .t <= .delay then
+                        call SetUnitFacing(.h.hero, .a)
+                    endif
+                    
+                    //animation & delay handling
+                    if .t > .delay then
+                        if not .ani then
+                            call Overstrain.drain(.h, COST)
+                            //animations
+                            set .prog = 0
+                            call IssueImmediateOrder(u, "stop")
+                            call SetUnitTurnSpeed(u, 0)
+                            call .h.lockFacing(.x, .y)
+                            //queueing the animations immediately allows the animation to play through fully
+                            if Frenzy[.h].on then
+                                call AddUnitAnimationProperties(u, "ready", TRUE)
+                                call SetUnitAnimationByIndex(u, 5)
+                                call QueueUnitAnimation(u, "ready")
+                            else
+                                call SetUnitAnimationByIndex(u, 5)
+                                call QueueUnitAnimation(u, "ready")
+                                call QueueUnitAnimation(u, "stand")
+                            endif
+                            set .wfx = AddSpecialEffectTarget(ATK_SFX, u, "weapon")
+                            set .ani = true
+                        endif
+                        if .prog <= ATTACK_TIME then
+                            //dynamic animation speed
+                            call SetUnitTimeScale(u, 1.5*h.getSpdBonus())
+                        else
+                            //stops ugly animation bugs associated with high speeds
+                            call SetUnitTimeScale(u, 1)
+                            call ResetUnitLookAt(u)
+                        endif
+                    else
+                        //progress does not move while delay is ongoing
+                        set .prog = 0
+                    endif
+                    
+                    //sfx and damage dealing
+                    if .prog >= ATTACK_TIME and not .sfx then
+                        call SetUnitTimeScale(u, 1)
+                        call DestroyEffect(AddSpecialEffect(SFX, .x, .y))
+                        call DestroyEffect(.wfx)
+                        call dmg(this, .x, .y)
+                        set .sfx = true
+                    endif
+                    
+                    //ending
+                    if .prog >= ATTACK_TIME+0.1 then
+                        call ResetUnitLookAt(u)
+                        call SetUnitTurnSpeed(u, GetUnitDefaultTurnSpeed(.h.hero))
+                        if not Frenzy[.h].on then
+                            call SetUnitPropWindow(u, GetUnitDefaultPropWindow(u)*DEGTORAD)
+                        endif
+                        call end(this)
+                    endif
+                endif
+                set u = null
+            endif
+
+            set this = Timer(.timer).next
+            exitwhen this == 0
+        endloop
+        return true
+    endmethod
+    
+    static method end takes thistype this returns nothing
+        set .t = 0
+        set .sfxt = 0
+        set .prog = 0
+        set .att = FALSE
+        set .ani = FALSE
+        set .sfx = FALSE
+        set .delay = 0
+        set .on = FALSE
+        set .h.busy.boolean[2] = FALSE
+        set .h.charge = FALSE
+        if Frenzy[.h].stop_queued then
+            set Frenzy[.h].attacking = FALSE
+        endif
+    endmethod
+    
+    static method dmg takes thistype this, real x, real y returns nothing
+        local integer lv = GetUnitAbilityLevel(.h.hero,GUILLOTINE)
+        local unit fog = null
+        local integer kills = 0
+        local integer prevk = 0
+        local boolean bonus = FALSE
+        if .outragerad >0 then 
+            call GroupEnumUnitsInRange(grp, x, y, .outragerad, null)
+        else
+            call GroupEnumUnitsInRange(grp, x, y, AOE+AOE_LV*lv, null)
+        endif
+        //deal damage, if units die then repeat the loop to deal bonus damage until no units are killed
+        loop
+            loop
+                set fog = FirstOfGroup(grp)
+                exitwhen null==fog
+                if IsUnitEnemy(fog, .h.owner) and UnitAlive(fog) then
+                    if bonus then
+                        call Outrage.store(this, .h.damage(fog, BONUS_DAMAGE*prevk*.h.getPowBonus()))
+                    else
+                        call Outrage.store(this, .h.damage(fog, (DAMAGE+.cdmg)*.h.getPowBonus()+.outragedmg))
+                    endif
+                    if GetWidgetLife(fog) < 0.405 then
+                        call DestroyEffect(AddSpecialEffect(KILL_SFX, GetUnitX(fog), GetUnitY(fog)))
+                        set kills = kills+1
+                    endif
+                endif
+                call GroupAddUnit(swap, fog)
+                call GroupRemoveUnit(grp, fog)
+            endloop
+            
+            set prevk = kills
+            set kills = 0
+            
+            if prevk > 0 then
+                set temp = grp
+                set grp = swap
+                set swap = temp
+                set bonus = TRUE
+            else
+                loop
+                    set fog = FirstOfGroup(swap)
+                    exitwhen null==fog
+                    call GroupRemoveUnit(swap, fog)
+                endloop
+                set bonus = FALSE    
+                exitwhen 0==0
+            endif
+        endloop
+        set .cdmg = 0
+    endmethod
+    
+    private static method onInit takes nothing returns nothing
+        call RegisterSpellEffectEvent(GUILLOTINE, function thistype.run)
+        call RegisterPlayerUnitEvent(EVENT_PLAYER_UNIT_ISSUED_POINT_ORDER, function thistype.click)
+        call RegisterPlayerUnitEvent(EVENT_PLAYER_UNIT_ISSUED_UNIT_ORDER, function thistype.click)
+        set expireC = Condition(function thistype.periodic)
+        set expireI = thistype.periodic
+    endmethod
+endstruct
+
+endlibrary

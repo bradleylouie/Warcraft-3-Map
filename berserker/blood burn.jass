@@ -1,0 +1,154 @@
+library BerserkerBloodBurn uses SpellEffectEvent, BerserkerOverstrain
+globals
+    private constant real DURATION_TICK = 0.078125
+    private constant real COST_PER_TICK = .3125
+endglobals
+
+struct BloodBurn extends array
+    implement TimerHead
+    private Timer timer
+    static constant integer SPELLID = 'AA04'
+    private static boolexpr expireC
+    private static integer expireI
+    private static trigger keydown_trig = CreateTrigger()
+    private static trigger keyup_trig = CreateTrigger()
+    static constant real PENALTY_MOD = 0.7
+    private static Table this_struct
+    HeroData h
+    boolean penalty
+    boolean on
+    real penalty_t
+    real charge_t
+    real effect_t
+    boolean keydown
+    real drained_hp
+
+    public static method initialize takes thistype this returns nothing
+        set .h = this
+        set .timer = Timer.create(TICK32, expireC, expireI)
+        call add(.timer)
+        set id[.timer] = this
+        set on = false
+        set penalty = false
+        set penalty_t = 0
+        set charge_t = 0
+        set effect_t = 0
+        set drained_hp = 0
+
+        set h.disabled_skills.integer[SPELLID] = 0
+
+        call BlzTriggerRegisterPlayerKeyEvent(keydown_trig, h.owner, ConvertOsKeyType($57), 0, true)
+        call BlzTriggerRegisterPlayerKeyEvent(keyup_trig, h.owner, ConvertOsKeyType($57), 0, false)
+        set keydown = false
+    endmethod
+
+    private static method keyDown takes nothing returns nothing
+        local thistype this = HeroData.getHeroDataFromPlayer(GetTriggerPlayer())
+        set keydown = true
+    endmethod
+
+    private static method keyUp takes nothing returns nothing
+        local thistype this = HeroData.getHeroDataFromPlayer(GetTriggerPlayer())
+        set keydown = false
+    endmethod
+
+    private static method expire takes nothing returns boolean
+        local thistype this = thistype(Timer.expired).first
+        local real dh
+        loop
+            set this = id[this]
+            //add disability check, use an item ability that does jack shit
+            if keydown and h.disabled_skills.integer[SPELLID] == 0 then
+                set dh = h.takeDamage(COST_PER_TICK, false)
+                set charge_t = charge_t + (dh/COST_PER_TICK)*DURATION_TICK
+                set drained_hp = drained_hp + dh
+                call h.setAbilityCounter(1, R2SW(effect_t+charge_t, 1, 1)+"s")
+            elseif charge_t > 4.99 or effect_t > 0 then
+                set on = true
+                set drained_hp = 0
+                if penalty then
+                    set penalty = false
+                    set Unshackle[h].severity = Unshackle[h].severity - 1
+                endif
+                set penalty_t = penalty_t + charge_t
+                set effect_t = effect_t + charge_t
+                call h.setAbilityCounter2(1, "|cffff6347"+R2SW(penalty_t, 1, 1)+"s|r")
+                set charge_t = 0
+            elseif charge_t > 0 then
+                set charge_t = charge_t - DURATION_TICK
+                if not (charge_t > 0) then
+                    set h.health = h.health + drained_hp + .01
+                    set drained_hp = 0
+                    set charge_t = 0
+                    call h.setAbilityCounter(1, "")
+                else
+                    set h.health = h.health + COST_PER_TICK
+                    set drained_hp = drained_hp - COST_PER_TICK
+                    call h.setAbilityCounter(1, R2SW(effect_t+charge_t, 1, 1)+"s")
+                endif
+            endif
+
+            if effect_t > 0 then
+                set effect_t = effect_t - TICK32
+                
+                if not (effect_t > 0) then
+                    set effect_t = 0
+                    set on = false
+                    set penalty = true
+                    
+                    if not Snap[h].on then
+                        set Unshackle[h].severity = Unshackle[h].severity + 1
+                        set Unshackle[h].recovered = false
+                    endif
+                    call h.setAbilityCounter(1, "")
+                else
+                    if charge_t == 0 then
+                        call h.setAbilityCounter(1, "|cff9acd32" + R2SW(effect_t, 1, 1)+"s|r")
+                    else
+                        call h.setAbilityCounter(1, "+" + R2SW(charge_t, 1, 1) + "s|n|cff9acd32" + R2SW(effect_t, 1, 1)+"s|r")
+                    endif
+                endif
+            endif
+
+            if penalty and not Snap[h].on then
+                set penalty_t = penalty_t - TICK32
+                set h.hp_t = 0
+                call h.setAbilityCounter2(1, "|cffff6347"+R2SW(penalty_t, 1, 1)+"s|r")
+
+                if penalty_t < Unshackle.STAND_UP_TIME and not Unshackle[h].standing_up then
+                    set Unshackle[h].start_stand_anim = false
+                    set Unshackle[h].standing_up = true
+                    set Unshackle[h].finished_standing = false
+                    set Unshackle[h].severity = Unshackle[h].severity - 1
+                endif
+
+                if not (penalty_t > 0) then
+                    set penalty = false
+                    set penalty_t = 0
+                    call h.setAbilityCounter2(1, "")
+                    if not Unshackle[h].finished_standing then
+                        set Unshackle[h].finished_standing = true
+                        call h.hold(false)
+                        call BlzPauseUnitEx(h.hero, false)
+                    else
+                        set Unshackle[h].severity = Unshackle[h].severity - 1
+                    endif
+                endif
+            endif
+
+            set this = Timer(.timer).next
+            exitwhen this == 0
+        endloop
+        return true
+    endmethod
+    
+    private static method onInit takes nothing returns nothing
+        call TriggerAddCondition(keydown_trig, function thistype.keyDown)
+        call TriggerAddCondition(keyup_trig, function thistype.keyUp)
+        set expireC = Condition(function thistype.expire)
+        set expireI = thistype.expire
+        set this_struct = Table.create()
+    endmethod
+endstruct
+
+endlibrary

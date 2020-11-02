@@ -1,0 +1,543 @@
+library BerserkerOutrage uses SpellEffectEvent, Math, BerserkerOverstrain, BerserkerFrenzy, BerserkerGuillotine
+
+globals
+    private constant integer QUAKE = 'h005'
+    private constant integer EXPLOSION = 'h004'
+    private constant integer SHOCKWAVE = 'h006'
+    private constant integer MSG_FRAMES  = 8 //0.25 seconds
+    private constant real STORE_DEALT    = 0.045 //5% dmg dealt stored lv.1
+    private constant real STORE_DEALT_LV = 0.005
+    private constant real STORE_TAKEN    = 0.45  //50% dmg taken stored lv.1
+    private constant real STORE_TAKEN_LV = 0.05
+    private constant real CAST_DELAY     = 1
+    private constant real JUMP_TIME      = 2
+    private constant real EXPLODE_DELAY  = 2
+    private constant real EXPLODE_THRES  = 100  //value required to explode
+    private constant real DAMAGE         = 27   //300% dmg lv.1
+    private constant real DAMAGE_LV      = 3
+    private constant real RADIUS         = 325
+    private constant real EXPLODE_BASERAD= 300
+    private constant real EXPLODE_RAD    = 1 //0.25*stored value lv.1
+    private constant real EXPLODE_RAD_LV = 0.015
+	private constant real EXPLODE_TIME   = 3
+    private constant real MAX_HEIGHT     = 600
+    private constant real LANDING_ADJUST = 125 //how far back the hero lands from the target point
+    private constant real COST           = 30
+    private constant real INITIAL_GROWTH = 1000
+    private constant string SWING_SFX = "animeslash.mdx"
+    private constant string DSWING_SFX = "animeslashdark.mdx"
+    private constant string JUMP_SFX     = "windcone.mdx"
+    private constant string JUMP_SFX2     = "windcircle.mdx"
+    private constant string DJUMP_SFX     = "windconedark.mdx"
+    private constant string DJUMP_SFX2     = "windcircledark.mdx"
+    private constant string WEAP_SFX     = "Abilities\\Weapons\\PhoenixMissile\\Phoenix_Missile.mdl"
+    private constant string SLAM_SFX     = "Abilities\\Spells\\Orc\\WarStomp\\WarStompCaster.mdl"
+    private constant string SLAM_SFX2    = "Abilities\\Spells\\Other\\Incinerate\\FireLordDeathExplode.mdl"
+    private constant string MAX_INDICATOR = "OutrageIndicator.mdx"
+    private constant string CURR_INDICATOR = "OutrageCurrentIndicator.mdx"
+    private constant sound SOUND         = CreateSound("Sound\\Buildings\\Death\\BuildingDeathLargeHuman.wav", false, false, true, 10, 10, "")
+    private constant sound VOICE         = CreateSound("Units\\Undead\\Varimathras\\VarimathrasYesAttack4.wav", false, false, false, 10, 10, "")
+    private constant string LAUGH         = "war3mapImported\\laugh.wav"
+    //sound adjusted in init, eaxsettings mean absolutely nothing
+endglobals
+
+struct Outrage extends array
+    static integer SPELLID = 'A008'
+    implement KeyDown
+    implement TimerHead
+    private Timer timer
+    private static boolexpr expireC
+    private static integer expireI
+    private HeroData h
+    real t
+    real ct
+    real max_allowed_dist
+    real stored
+    real storedshot
+    real y0
+    real y1
+    real x
+    real y
+    real d
+    real a
+    real travelled
+    real explodeScale
+    real explodeScaleGrow
+    effect sfx
+    unit quake
+    unit explosion
+    unit shockwave
+    integer msgf
+    group en
+    item counter
+    boolean guillotine
+    boolean ani
+    boolean delayed
+    boolean jumped
+    boolean exploded
+    boolean on
+    boolean cancel
+    boolean start_anim
+    boolean prep_slam
+    boolean played_jump_sfx 
+    boolean started
+	real overalldamage
+    effect max_indicator
+    effect mouse_indicator
+    integer alpha
+
+    boolean disabled
+    
+    public static method store takes thistype this, real r returns nothing
+        local integer lv = GetUnitAbilityLevel(.h.hero, SPELLID)
+        set .stored = .stored+r*(STORE_DEALT+STORE_DEALT_LV*lv)
+		//call BJDebugMsg(R2S(r*(STORE_DEALT+STORE_DEALT_LV*lv)))
+    endmethod
+    
+    private static method storetake takes nothing returns boolean
+        local thistype this = GetUnitUserData(hero_damaged_hero)
+		if 0!=h then
+			//local integer lv = GetUnitAbilityLevel(.h.hero, OUTRAGE) start adding options
+			set .stored = .stored+hero_damaged_amount*(STORE_TAKEN+STORE_TAKEN_LV)//*lv)
+		endif
+        return false
+    endmethod
+    
+    public static method initialize takes thistype this returns nothing
+        local unit u
+        set .h = this
+        call regKey($52)
+        set u = .h.hero
+        set .timer = Timer.create(TICK32, expireC, expireI)
+        call add(.timer)
+        set id[.timer] = this
+        set .t = 0
+        set .travelled = 0
+        call UnitAddAbility(u, 'Amrf')
+        call UnitRemoveAbility(u, 'Amrf')
+        set .quake = CreateUnit(GetOwningPlayer(u), QUAKE, 0, 0, 0)
+        call ShowUnit(.quake, FALSE)
+        set .explosion = CreateUnit(GetOwningPlayer(u), EXPLOSION, 0, 0, 0)
+        call ShowUnit(.explosion, FALSE)
+        set .shockwave = CreateUnit(GetOwningPlayer(u), SHOCKWAVE, 0, 0, 0)
+        call ShowUnit(.shockwave, FALSE)
+        set .counter = UnitAddItemById(u, 'I001')
+        set .en = CreateGroup()
+        set max_indicator = AddSpecialEffect(MAX_INDICATOR, 0, 0)
+        call BlzSetSpecialEffectScale(max_indicator, .0078125*RADIUS)
+        set mouse_indicator = AddSpecialEffect(CURR_INDICATOR, 0, 0)
+        call BlzSetSpecialEffectScale(mouse_indicator, .0078125*RADIUS)
+        call BlzSetSpecialEffectAlpha(max_indicator, 0)
+        call BlzSetSpecialEffectAlpha(mouse_indicator, 0)
+        set u = null
+
+        set h.disabled_skills.integer[SPELLID] = 0
+        set disabled = false
+    endmethod
+    
+    private static method run takes nothing returns nothing
+        local thistype this = GetUnitUserData(GetTriggerUnit())
+        if Frenzy[h].on then
+            return
+        endif
+        if 0==.h then
+            call initialize(this)
+        endif
+        set max_allowed_dist = LANDING_ADJUST
+        set .d = LANDING_ADJUST
+        set ct = 0
+        set .a = Atan2(h.mousey-h.y, h.mousex-h.x)
+        set start_anim = false
+        set .on = TRUE
+        set started = false
+        set alpha = 0
+
+        if not disabled then
+            call h.hold(true)
+            set disabled = true
+            call h.disableSkill(SPELLID)
+            call h.disableSkill(Frenzy.SPELLID)
+        endif
+    endmethod
+
+    private method start takes nothing returns nothing
+        local real x1 = h.x
+        local real y1 = h.y
+        local real dx = .x-x1
+        local real dy = .y-y1
+
+        set started = true
+        call SetUnitTurnSpeed(h.hero, 0)
+        call SetUnitPropWindow(h.hero, 0)
+        call SetUnitPathing(h.hero, FALSE)
+        set .y0 = GetUnitZ(h.hero)
+        call MoveLocation(Loc, .x, .y)
+        set .y1 = GetLocationZ(Loc)
+        set .d = SquareRoot(dx*dx+dy*dy)
+        set .a = Atan2(dy, dx)
+        call SetUnitFacing(h.hero, .a*bj_RADTODEG)
+        
+        if ct > CAST_DELAY-0.3 then
+            set t = CAST_DELAY-0.3
+        else
+            set t = ct
+        endif
+
+        set .storedshot = .stored
+		set overalldamage = 0
+        set prep_slam = false
+        set played_jump_sfx = false
+        if .storedshot >= EXPLODE_THRES then
+            call StartSound(VOICE)
+            call SetSpeechVolumeGroupsImmediateBJ()
+        endif
+    endmethod
+    
+    private static method stop takes nothing returns nothing
+        local thistype this = GetUnitUserData(GetTriggerUnit())
+        if .h.hero == GetTriggerUnit() and .on and GetIssuedOrderId() == OrderId("stop") then
+            set .cancel = TRUE
+        endif
+    endmethod
+    
+    private static method expire takes nothing returns boolean
+        local thistype this = thistype(Timer.expired).first
+        local unit u
+        local unit fog
+        local real m
+        local integer lv
+        local string msg
+        local effect fx
+        local real curr_a
+        local real dx
+        local real dy
+        local real curr_d
+        loop
+            set this = id[this]
+            
+            set .msgf = .msgf + 1
+            if .msgf >= MSG_FRAMES then
+                call SetItemCharges(.counter, R2I(.stored))
+                set .msgf = 0
+            endif
+            
+            if .on then
+                if not start_anim then
+                    call SetUnitTimeScale(h.hero, 1)
+                    call SetUnitAnimation(h.hero, "stand first")
+                    set start_anim = true
+                endif
+                if keydown and not started then
+                    //////////////////////////////////////////////
+                    set curr_a = Atan2(h.mousey-h.y, h.mousex-h.x)
+                    if SignedAngleDifferenceRad(.a, curr_a) > 0.008 then
+                        set .a = .a + 0.008
+                    elseif SignedAngleDifferenceRad(.a, curr_a) < -0.008 then
+                        set .a = .a - 0.008
+                    else
+                        set .a = curr_a
+                    endif
+
+                    set ct = ct + TICK32
+                    set max_allowed_dist = max_allowed_dist + (INITIAL_GROWTH/(ct+1))*TICK32
+                    if alpha == 255 or alpha + 25 > 255 then
+                        set alpha = 255
+                    else
+                        set alpha = alpha + 25
+                    endif
+
+                    set curr_d = SquareRoot((h.mousey-h.y)*(h.mousey-h.y) + (h.mousex-h.x)*(h.mousex-h.x))
+                    if curr_d > max_allowed_dist then
+                        set curr_d = max_allowed_dist
+                    endif
+                    if .d - curr_d < -32 then
+                        set .d = .d + 32
+                    elseif .d - curr_d > 32 then
+                        set .d = .d - 32
+                    else
+                        set .d = curr_d 
+                    endif
+                    call BlzSetSpecialEffectAlpha(max_indicator, alpha)
+                    call BlzSetSpecialEffectAlpha(mouse_indicator, alpha)
+                    call BlzSetSpecialEffectYaw(max_indicator, .a-pi)
+					call BlzSetSpecialEffectPosition(max_indicator, h.x + max_allowed_dist*Cos(.a), h.y + max_allowed_dist*Sin(.a), 0)
+                    if .d < max_allowed_dist then
+                        set .x = h.x + .d*Cos(.a)
+                        set .y = h.y + .d*Sin(.a)
+                    else
+                        set .x = h.x + (max_allowed_dist)*Cos(.a)
+                        set .y = h.y + (max_allowed_dist)*Sin(.a)
+                    endif
+                    call BlzSetSpecialEffectYaw(mouse_indicator, .a-pi)
+					call BlzSetSpecialEffectPosition(mouse_indicator, .x, .y, 0)
+
+                    call SetUnitFacing(h.hero, .a*bj_RADTODEG)
+                elseif not started then
+                    call start()
+                else
+                    if alpha == 0 or alpha - 64 < 0 then
+                        set alpha = 0
+                    else
+                        set alpha = alpha - 64
+                    endif
+
+                    call BlzSetSpecialEffectAlpha(max_indicator, alpha)
+                    call BlzSetSpecialEffectAlpha(mouse_indicator, alpha)
+
+                    set .t = .t + TICK32
+                    set u = .h.hero
+                    set lv = GetUnitAbilityLevel(u, SPELLID)
+                endif
+
+                if .t > CAST_DELAY-0.3 and not .delayed then
+                    call Overstrain.drain(.h, COST)
+                    call SetUnitBlendTime(u, 0.0)
+                    call SetUnitAnimation(u, "stand third")
+                    call QueueUnitAnimation(u, "stand fourth")
+                    set .delayed = TRUE
+                    if .storedshot >= EXPLODE_THRES then
+                        call VolumeGroupReset()
+                    endif
+                endif
+                if .t > CAST_DELAY and not .jumped then
+                    if not played_jump_sfx then
+                        if Snap[h].on then
+                            set fx = AddSpecialEffect(DJUMP_SFX, h.x, h.y)
+                        else
+                            set fx = AddSpecialEffect(JUMP_SFX, h.x, h.y)
+                        endif
+                        call BlzSetSpecialEffectYaw(fx, .a+pi)
+                        call BlzSetSpecialEffectPitch(fx, 1.5708-0.78539*.d/2000)
+                        call BlzSetSpecialEffectScale(fx, 0.35)
+                        call BlzSetSpecialEffectHeight(fx, 64)
+                        call BlzSetSpecialEffectTimeScale(fx, 2)
+                        call DestroyEffect(fx)
+                        if Snap[h].on then
+                            set fx = AddSpecialEffect(DJUMP_SFX2, h.x, h.y)
+                        else
+                            set fx = AddSpecialEffect(JUMP_SFX2, h.x, h.y)
+                        endif
+                        call BlzSetSpecialEffectScale(fx, 0.35)
+                        call BlzSetSpecialEffectTimeScale(fx, 2)
+                        call DestroyEffect(fx)
+                        set played_jump_sfx = true
+                    endif
+                    if not prep_slam then
+                        call SetUnitTimeScale(u, 1.85/(JUMP_TIME-0.5))
+                    endif
+                    set m = TICK32*(.d-LANDING_ADJUST)/JUMP_TIME
+                    
+                    set .travelled = .travelled + m
+                    if not (.travelled < .d-LANDING_ADJUST) and .d > LANDING_ADJUST then
+                        set m = .d-LANDING_ADJUST-(.travelled - m)
+                        set .travelled = .d-LANDING_ADJUST
+                    endif
+                    call SetUnitX(u, GetUnitX(u)+m*Cos(a))
+                    call SetUnitY(u, GetUnitY(u)+m*Sin(a))
+                    call MoveLocation(Loc, GetUnitX(u), GetUnitY(u))
+
+                    call SetUnitFlyHeight(u, ParabolaZ(.y0, .y1, MAX_HEIGHT, .d-LANDING_ADJUST, .travelled)-GetLocationZ(Loc), 0)
+                endif
+                if .t > CAST_DELAY+JUMP_TIME-0.05 and not prep_slam then
+                    set prep_slam = true
+                    call SetUnitTimeScale(u, 0.0)
+                    call SetUnitAnimation(u, "stand fifth")
+
+                    call StartSound(Frenzy.swing_snd[0])
+                    call SetSoundPosition(Frenzy.swing_snd[0], h.x, h.y, 0)
+                    call SetSoundPlayPosition(Frenzy.swing_snd[0],220)
+                    call SetSoundPitch(Frenzy.swing_snd[0], 1)
+                    if Snap[h].on then
+                        call StartSound(Frenzy.demonize_snd[0])
+                        call SetSoundPosition(Frenzy.demonize_snd[0], h.x, h.y, 0)
+                        call SetSoundPitch(Frenzy.demonize_snd[0], 1)
+                    endif
+                endif
+                if .t > CAST_DELAY+JUMP_TIME and not .jumped then
+                    call SetUnitBlendTime(u, 0.3)
+                    call SetUnitTimeScale(u, 1)
+
+                    if Snap[h].tint < 128 then
+                        set fx = AddSpecialEffect(DSWING_SFX, h.x, h.y)
+                    else
+                        set fx = AddSpecialEffect(SWING_SFX, h.x, h.y)
+                    endif
+                    call BlzSetSpecialEffectYaw(fx, .a)
+                    call BlzSetSpecialEffectRoll(fx, pi-1.5708)
+                    call BlzSetSpecialEffectHeight(fx, 64)
+                    call BlzSetSpecialEffectPitch(fx, -0.9)
+                    call BlzSetSpecialEffectScale(fx, 1.25)
+                    call DestroyEffect(fx)
+
+                    if disabled then
+                        call h.hold(false)
+                        set disabled = false
+                        call h.enableSkill(SPELLID)
+                        call h.enableSkill(Frenzy.SPELLID)
+                    endif
+
+                    call QueueUnitAnimation(u, "stand first")
+                    call QueueUnitAnimation(u, "stand first")
+                    call QueueUnitAnimation(u, "stand")
+                    call SetUnitPathing(u, TRUE)
+                    call SetUnitFlyHeight(u, 0, 0)
+                    set .jumped = TRUE
+                    call DestroyEffect(AddSpecialEffect(SLAM_SFX, .x, .y))
+                    call DestroyEffect(AddSpecialEffect(SLAM_SFX2, .x, .y))
+                    //deal damage
+                    if .guillotine then
+                        set Guillotine[.h].outragedmg = (DAMAGE+DAMAGE_LV*lv)*.h.getPowBonus()
+                        set Guillotine[.h].outragerad = RADIUS
+                        call Guillotine[.h].dmg(.h, .x, .y)
+                        call Guillotine[.h].end(.h)
+                        set Guillotine[.h].outragedmg = 0
+                        set Guillotine[.h].outragerad = 0
+                        set .guillotine = FALSE
+                    else
+                        call GroupEnumUnitsInRange(grp, .x, .y, RADIUS, null)
+                        loop
+                            set fog = FirstOfGroup(grp)
+                            exitwhen null==fog
+                            if IsUnitEnemy(fog, .h.owner) and UnitAlive(fog) then
+                                call .store(this, .h.damage(fog, (DAMAGE+DAMAGE_LV*lv)*.h.getPowBonus()))
+                            endif
+                            call GroupRemoveUnit(grp, fog)
+                        endloop
+                    endif
+                    
+                    //THRESHOLD CHECK + TON OF SFX BULLSHIT
+                    if .storedshot >= EXPLODE_THRES and not .cancel then
+                        set .storedshot = .stored
+                        call DestroyEffect(.sfx)
+                        set .explodeScale = (EXPLODE_BASERAD+.stored*(EXPLODE_RAD+EXPLODE_RAD_LV*lv))/180
+                        
+                        call ShowUnit(.quake, TRUE)
+                        call UnitRemoveAbility(.quake, 'Aloc')
+                        call UnitAddAbility(.quake, 'Aloc')
+                        call SetUnitX(.quake, .x)
+                        call SetUnitY(.quake, .y)
+                        call SetUnitScale(.quake, .explodeScale/2.5,0,0)
+                        call SetUnitAnimation(.quake, "stand")
+                        call SetUnitTimeScale(.quake, 2.5)
+                        
+                        call ShowUnit(.explosion, TRUE)
+                        call UnitRemoveAbility(.explosion, 'Aloc')
+                        call UnitAddAbility(.explosion, 'Aloc')
+                        call SetUnitX(.explosion, .x)
+                        call SetUnitY(.explosion, .y)
+                        call SetUnitScale(.explosion, .explodeScale ,0,0)
+                        call SetUnitAnimation(.explosion, "death")
+                        call SetUnitTimeScale(.explosion, 0.075)
+                        
+                        call ShowUnit(.shockwave, TRUE)
+                        call UnitRemoveAbility(.shockwave, 'Aloc')
+                        call UnitAddAbility(.shockwave, 'Aloc')
+                        call SetUnitX(.shockwave, .x)
+                        call SetUnitY(.shockwave, .y)
+                        call SetUnitScale(.shockwave, .explodeScale/1.5,0,0)
+                        call SetUnitAnimation(.shockwave, "birth")
+                        call SetUnitTimeScale(.shockwave, 0.75)
+                    else
+                        call SetUnitTimeScale(u, 1)
+                        call SetUnitTurnSpeed(u, GetUnitDefaultTurnSpeed(.h.hero))
+                        call SetUnitPropWindow(u, GetUnitDefaultPropWindow(u))
+                        set .h.busy.boolean[4] = FALSE
+                        set .t = 0
+                        set .travelled = 0
+                        set .on = FALSE
+                        set .delayed = FALSE
+                        set .jumped = FALSE
+                        set .cancel = FALSE
+                    endif
+                    //---------------------
+                endif
+                if .t >= CAST_DELAY+JUMP_TIME+EXPLODE_DELAY*0.9 and not .exploded then
+                    if not .ani then
+                        call SetUnitAnimation(u, "victory")
+                        set .explodeScale = (EXPLODE_BASERAD+.storedshot*(EXPLODE_RAD+EXPLODE_RAD_LV*lv))/180
+                        set .explodeScaleGrow = .explodeScale
+                        set .ani = TRUE
+                    endif
+                    call StartSound(SOUND)
+                    call SetSoundPosition(SOUND, .x, .y, 0)
+                    //explosion doubles in size just before dealing damage
+                    set .explodeScale = .explodeScale+(.explodeScaleGrow/((1/TICK32)*EXPLODE_DELAY*0.1))
+                    call SetUnitScale(.explosion, .explodeScale ,0,0)
+                    call SetUnitScale(.shockwave, .explodeScale/1.5,0,0)
+                endif
+                if .t >= CAST_DELAY+JUMP_TIME+EXPLODE_DELAY and not .exploded then
+                    set .storedshot = .stored
+                    call SetUnitTimeScale(u, 1)
+                    call QueueUnitAnimation(u, "stand")
+                    call SetUnitTurnSpeed(u, GetUnitDefaultTurnSpeed(u))
+                    call SetUnitPropWindow(u, GetUnitDefaultPropWindow(u))
+                    set .h.busy.boolean[4] = FALSE
+                    
+                    call ShowUnit(.quake, FALSE)
+                    call SetUnitTimeScale(.explosion, 0.1)
+                    call SetUnitTimeScale(.shockwave, 2)
+                    
+                    set .exploded = TRUE
+                endif
+                if .t >= CAST_DELAY+JUMP_TIME+EXPLODE_DELAY and .t <= CAST_DELAY+JUMP_TIME+EXPLODE_DELAY+EXPLODE_TIME then
+                    //deal damage
+                    set .msgf = 0
+                    set .stored = 0
+					//set overalldamage = overalldamage+.storedshot*Gaussian(((t-CAST_DELAY-JUMP_TIME-EXPLODE_DELAY)/EXPLODE_TIME)*3,0,1)*.02677
+					//call BJDebugMsg(R2S(overalldamage))
+                    call GroupEnumUnitsInRange(grp, .x, .y, EXPLODE_BASERAD+.storedshot*(EXPLODE_RAD+EXPLODE_RAD_LV*lv), null)
+                    loop
+                        set fog = FirstOfGroup(grp)
+                        exitwhen null==fog
+                        if /*not IsUnitInGroup(fog, .en) and*/ IsUnitEnemy(fog, .h.owner) and UnitAlive(fog) then
+                            call .h.damage(fog, .storedshot*Gaussian(((t-CAST_DELAY-JUMP_TIME-EXPLODE_DELAY)/EXPLODE_TIME)*3,0,1)*.02677)
+                            //call GroupAddUnit(.en, fog)
+                        endif
+                        call GroupRemoveUnit(grp, fog)
+                    endloop
+                endif
+                if .t >= CAST_DELAY+JUMP_TIME+EXPLODE_DELAY+5 then
+                    loop
+                        set fog = FirstOfGroup(.en)
+                        exitwhen null==fog
+                        call GroupRemoveUnit(.en, fog)
+                    endloop
+                    set .t = 0
+                    set .travelled = 0
+                    call ShowUnit(.quake, FALSE)
+                    call ShowUnit(.explosion, FALSE)
+                    call ShowUnit(.shockwave, FALSE)
+                    set .on = FALSE
+                    set .delayed = FALSE
+                    set .jumped = FALSE
+                    set .exploded = FALSE
+                    set .ani = FALSE
+                    set .cancel = FALSE
+                endif
+            endif
+            
+            set this = Timer(.timer).next
+            exitwhen this == 0
+        endloop
+        set u = null
+        return true
+    endmethod
+    
+    private static method onInit takes nothing returns nothing
+        call SetSoundPitch(SOUND, 0.85)
+        call SetSoundVolume(SOUND, 100)
+        call SetSoundChannel(SOUND, 5)
+        
+        call SetSoundPitch(VOICE, 0.9)
+        call SetSoundVolume(VOICE, 127)
+        call SetSoundChannel(VOICE, 0)
+        //yes, you have to do all of this for each sound
+		call CreateRealEventTrigger.execute("hero_damaged_event", 1.00, function thistype.storetake)
+        call RegisterPlayerUnitEvent(EVENT_PLAYER_UNIT_ISSUED_ORDER, function thistype.stop)
+        call RegisterSpellEffectEvent(SPELLID, function thistype.run)
+        set expireC = Condition(function thistype.expire)
+        set expireI = thistype.expire
+    endmethod
+endstruct
+
+endlibrary

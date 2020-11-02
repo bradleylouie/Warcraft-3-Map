@@ -1,0 +1,238 @@
+library BerserkerSnap uses SpellEffectEvent, BerserkerOverstrain
+
+globals
+    private constant real TICK          = 0.05
+    private constant real SP_TICK       = 0.2 //25 sec per 100 sp
+    private constant real SP_TICK_LV    = -0.01 //2.5 sec per lv
+    private constant real SP_TICK_CP    = 0.04 //0.8 more sp/sec
+    private constant real MP_TICK       = 0.5 //10 sec per 100 mp
+    private constant real MP_TICK_CP    = 0.1 //2 more mp/sec
+    private constant integer STAT_BONUS = 15
+    private constant integer TINT       = 50
+    private constant integer TINT_RATE  = 35
+   private constant real CORRUPTION_TIME= 50 //seconds
+    private constant real STAT_RATIO    = 3 //per spd/pow lost
+    private constant real UNSHACKLE_TIME= 15
+  private constant integer UNSHACKLE_MOD= 2 //+1
+private constant integer UNSHACKLE_DRAIN= 2
+    private constant string SFX_AMBIENT = "war3mapImported\\demonizeambient.mdx"
+	private constant string SFX_LIMBS   = "demonizelimbs.mdx"
+	private constant string SFX_HEAD    = "darkbreath.mdx"
+    private constant string SFX_HEAD2   = "demonizeeyes.mdx"
+    private constant string SPAWN_SFX   = "demonize.mdx"
+    private constant string AMBIENT_SND1= "Sound\\Buildings\\Fire\\OrcHumanMediumBuildingFire1.wav"
+    private constant string AMBIENT_SND2= "Sound\\Buildings\\Fire\\UndeadLargeFireLoop1.wav"
+  private constant string CORRUPTION_SFX= "demonizecorruption.mdx"
+  private constant string CORRUPTION_SND= "Buildings\\Undead\\Necropolis\\NecropolisUpgrade1.wav"
+endglobals
+
+//add high mana cost when timeout
+
+struct Snap extends array
+    implement TimerHead
+    private Timer timer
+    private static thistype array demonize_array[MAX_PLAYERS]
+    private static integer index = 0
+    static constant integer SPELLID = 'A001'
+    private static boolexpr expireC
+    private static integer expireI
+    private Table fx
+    private HeroData h
+    private real t
+    private real buildup
+    integer tint
+    integer bonus
+    integer unshackle_bonus
+    integer corruption
+    boolean on
+    boolean unshackled
+    sound start_snd
+    Sound loop_snd1
+    Sound loop_snd2
+    sound corrupt_snd
+    sound ls1
+    sound ls2
+
+	static method initialize takes thistype this returns nothing
+		set .h = this
+        set .timer = Timer.create(TICK, expireC, expireI)
+        call add(.timer)
+        set id[.timer] = this
+        set demonize_array[index] = this
+        set index = index+1
+        set fx = Table.create()
+        set .tint = 255
+        set h.disabled_skills.integer[SPELLID] = 0
+        set start_snd = CreateSound("darkness.mp3", false, false, false, 10, 10, "")
+        set corrupt_snd = CreateSound(CORRUPTION_SND, false, false, false, 10, 10, "")
+        call SetSoundVolume(start_snd, 64)
+        call SetSoundVolume(corrupt_snd, 72)
+        set corruption = 0
+        set bonus = 0
+        set on = false
+        set unshackled = false
+        set unshackle_bonus = 0
+        call h.setAbilityCounter(0, R2SW(CORRUPTION_TIME, 1, 1)+"s")
+        set loop_snd1 = Sound.createEx(AMBIENT_SND1, 3517, true, true, false, 10, 10, "")
+        set loop_snd2 = Sound.createEx(AMBIENT_SND2, 3018, true, true, false, 10, 10, "")
+	endmethod
+
+    private static method roundStart takes nothing returns nothing
+        local integer i = 0
+        local thistype this
+        loop
+            exitwhen i == index
+            set this = demonize_array[i]
+            set buildup = 0
+            set corruption = 0
+            call h.setAbilityCounter(0, R2SW(CORRUPTION_TIME, 1, 1)+"s")
+            if bonus < 0 then
+                call .h.modSpdTemp(-bonus)
+                call .h.modPowTemp(-bonus)
+                set bonus = 0
+            endif
+            set i = i+1
+        endloop
+    endmethod
+    
+    private static method run takes nothing returns nothing
+        local thistype this = GetUnitUserData(GetTriggerUnit())
+        local integer i
+        if not .on then
+            set .on = true
+            if Unshackle[h].toggle then
+                set unshackled = true
+                call h.disableSkill(Unshackle.SPELLID)
+            endif
+            if BloodBurn[h].penalty then
+                set Unshackle[h].severity = Unshackle[h].severity - 1
+            endif
+            set .t = 0
+            call DestroyEffect(AddSpecialEffectTarget(SPAWN_SFX, h.hero, "chest"))
+            set fx.effect[0] = AddSpecialEffectTarget(SFX_AMBIENT, h.hero, "chest")
+            set fx.effect[1] = AddSpecialEffectTarget(SFX_LIMBS, h.hero, "hand, left")
+            set fx.effect[2] = AddSpecialEffectTarget(SFX_LIMBS, h.hero, "hand, right")
+            set fx.effect[3] = AddSpecialEffectTarget(SFX_HEAD, h.hero, "chest")
+            set fx.effect[4] = AddSpecialEffectTarget(SFX_HEAD2, h.hero, "head")
+            call StartSound(start_snd)
+            call SetSoundPosition(start_snd, h.x, h.y, 0)
+            set ls1 = loop_snd1.runUnitEx(h.hero, 30, 1)
+            set ls2 = loop_snd2.runUnitEx(h.hero, 28, 1)
+        elseif .on and (not unshackled or t > UNSHACKLE_TIME)  then
+            set .on = false
+            if unshackled then
+                call h.enableSkill(Unshackle.SPELLID)
+                call IssueImmediateOrderById(h.hero, UNIMMOLATION)
+                call Unshackle[h].penalize(t)
+                set unshackled = false
+            endif
+            if BloodBurn[h].penalty then
+                set Unshackle[h].severity = Unshackle[h].severity + 1
+                set Unshackle[h].recovered = false
+            endif
+            set .t = 0
+            set i = 0
+            loop
+                call DestroyEffect(.fx.effect[i])
+                set i = i+1
+                exitwhen i==5
+            endloop
+            call Sound.release(ls1)
+            call Sound.release(ls2)
+        endif
+    endmethod
+    
+    private static method expire takes nothing returns boolean
+        local thistype this = thistype(Timer.expired).first
+        local integer i
+        local integer k
+        local real sp_cost
+        loop
+            set this = id[this]
+            
+            set .t = .t + TICK
+            
+            if .on then
+                set sp_cost = SP_TICK + (SP_TICK_LV*h.A(0)) + (SP_TICK_CP*corruption)
+                if unshackled then
+                    set sp_cost = sp_cost * UNSHACKLE_DRAIN
+                    //call h.setAbilityCounter(7, R2SW(UNSHACKLE_TIME-.t, 1, 1)+"s")
+                endif
+
+                if not (h.special < sp_cost) then
+                    set h.special = h.special - sp_cost
+                else
+                    if not unshackled then
+                        call Overstrain.drain(.h, MP_TICK+(MP_TICK_CP*corruption))
+                    else
+                        call Overstrain.drain(.h, (MP_TICK+(MP_TICK_CP*corruption))*UNSHACKLE_DRAIN)
+                    endif
+                endif
+
+                if bonus < STAT_BONUS + corruption*STAT_RATIO then
+                    call .h.modSpdTemp(1)
+                    call .h.modPowTemp(1)
+                    set .bonus = .bonus + 1
+                elseif unshackled and unshackle_bonus < (STAT_BONUS + corruption*STAT_RATIO)*UNSHACKLE_MOD then
+                    call .h.modSpdTemp(1)
+                    set .unshackle_bonus = .unshackle_bonus + 1
+                endif
+                //every 50 seconds spent in demonize increases its stat bonus by 3
+                //but permanently decreases stats by 1 unactivated
+                if h.getSpd(false)-corruption-.001 > h.minspd and h.getPow(false)-corruption-.001 > h.minpow then
+                    if not unshackled then
+                        set .buildup = .buildup + TICK
+                    else
+                        set buildup = buildup + TICK*UNSHACKLE_DRAIN
+                    endif
+                    if buildup > CORRUPTION_TIME then
+                        call DestroyEffect(AddSpecialEffectTarget(CORRUPTION_SFX, h.hero, "chest"))
+                        call StartSound(corrupt_snd)
+                        call SetSoundPosition(corrupt_snd,h.x, h.y, 0)
+                        set buildup = buildup - CORRUPTION_TIME
+                        set corruption = corruption+1
+                    endif
+                    call h.setAbilityCounter(0, R2SW(CORRUPTION_TIME-buildup, 1, 1)+"s")
+                endif
+
+                if .tint > TINT then
+                    set .tint = .tint - TINT_RATE
+                    if .tint < TINT then
+                        set .tint = TINT
+                    endif
+                    call SetUnitVertexColor(.h.hero, tint, tint, tint, 255)
+                endif
+            else
+                if .bonus > -corruption then
+                    call .h.modSpdTemp(-1)
+                    call .h.modPowTemp(-1)
+                    set .bonus = .bonus - 1
+                elseif .unshackle_bonus > 0 then
+                    call .h.modSpdTemp(-1)
+                    set unshackle_bonus = unshackle_bonus-1
+                endif
+
+                if .tint < 255 then
+                    set .tint = .tint + TINT_RATE
+                    if .tint > 255 then
+                        set .tint = 255
+                    endif
+                    call SetUnitVertexColor(.h.hero, .tint, .tint, .tint, 255)
+                endif
+            endif
+            
+            set this = Timer(.timer).next
+            exitwhen this == 0
+        endloop
+        return true
+    endmethod
+    
+    private static method onInit takes nothing returns nothing
+        call RegisterSpellEffectEvent(SPELLID, function thistype.run)
+        set expireC = Condition(function thistype.expire)
+        set expireI = thistype.expire
+        call CreateRealEventTrigger.execute("round_start", 1.00, function thistype.roundStart)
+    endmethod
+endstruct
+
+endlibrary

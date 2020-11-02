@@ -1,0 +1,287 @@
+library BerserkerUnshackle uses SpellEffectEvent, BerserkerOverstrain, BerserkerSnap
+
+globals
+    private constant real FORCED_DURATION = 15
+    private constant integer PENALTY = -15
+endglobals
+
+struct Unshackle extends array
+    implement TimerHead
+    private Timer timer
+    private static boolexpr expireC
+    private static integer expireI
+
+    static constant integer SPELLID    = 'A004'
+    static constant real PENALTY_MOD = 0.3
+    static constant real STAND_UP_TIME = 1
+    private static Table this_struct
+    HeroData h
+    boolean toggle
+    boolean penalty
+    integer severity //1 = blood burn, 2 = unshackle, 3 = both
+    real t
+    boolean fully_disabled
+    boolean slightly_hurt
+    boolean greatly_hurt
+    boolean recovered
+    boolean standing_up
+    boolean finished_standing
+    boolean start_stand_anim
+    integer tag
+
+    public static method initialize takes thistype this returns nothing
+        set .h = this
+        set .timer = Timer.create(0.1, expireC, expireI)
+        call add(.timer)
+        set id[.timer] = this
+        set toggle = false
+        set severity = 0
+        set fully_disabled = false
+        set slightly_hurt = false
+        set greatly_hurt = false
+        set recovered = true
+        set standing_up = true
+        set finished_standing = true
+        set start_stand_anim = false
+        set h.disabled_skills.integer[SPELLID] = 0
+        set tag = 0
+    endmethod
+
+    method penalize takes real duration returns nothing
+        set t = duration
+    endmethod
+
+    private static method run takes nothing returns nothing
+        local thistype this = GetUnitUserData(GetTriggerUnit())
+        set toggle = true
+        call BlzSetUnitAbilityCooldown(h.hero, Snap.SPELLID, 0, FORCED_DURATION)
+    endmethod
+    
+    private static method stop takes nothing returns nothing
+        local thistype this = GetUnitUserData(GetTriggerUnit())
+        if 0!=h and GetIssuedOrderId() == UNIMMOLATION then
+            call stopM()
+        endif
+    endmethod
+
+    method stopM takes nothing returns nothing
+        set toggle = false
+        call BlzSetUnitAbilityCooldown(h.hero, Snap.SPELLID, 0, 2)
+        //change icon
+    endmethod
+
+    private static method expire takes nothing returns boolean
+        local thistype this = thistype(Timer.expired).first
+        loop
+            set this = id[this]
+            
+            if t > 0 then
+                if not BloodBurn[h].on then
+                    if not penalty then
+                        set penalty = true
+                        set severity = severity + 2
+                        set recovered = false
+                    endif
+                    set t = t - 0.1
+                    call h.setAbilityCounter(7, "|cffff6347"+R2SW(t, 1, 1)+"s")
+                    //blood burn will add to this severity when it's done
+
+                    //copy this in blood burn
+                    if t < STAND_UP_TIME and not standing_up then
+                        set start_stand_anim = false
+                        set standing_up = true
+                        set finished_standing = false
+                        set severity = severity - 2
+                    endif
+                endif
+
+                if not (t > 0) and penalty then
+                    set penalty = false
+                    call h.setAbilityCounter(7, "")
+                    set t = 0
+                    if not finished_standing then
+                        set finished_standing = true
+                        call h.hold(false)
+                        call BlzPauseUnitEx(h.hero, false)
+                    else
+                        set severity = severity - 2
+                    endif
+                endif
+            endif
+
+            if severity > 0 then
+                if severity == 3 then
+                    if not fully_disabled then
+                        set fully_disabled = true
+                        call fullyDisable(true)
+                    endif
+                    if standing_up and not Frenzy[h].attacking then //complete disability
+                        //disable all abilities including items
+                        call SetUnitAnimation(h.hero, "Morph")
+                        call QueueUnitAnimation(h.hero, "stand swim")
+                        set standing_up = false
+                        call h.hold(true)
+                        call BlzPauseUnitEx(h.hero, true) //is integer-based, so multiple calls add up
+                    endif
+                elseif severity == 2 then
+                    if not greatly_hurt then //strong disability
+                        //disable all abilities except frenzy
+                        set greatly_hurt = true
+                        call strongDisable(true)
+                        
+                        call SetUnitTurnSpeed(h.hero, 0.05)
+                        set h.msbonus = PENALTY_MOD
+
+                        if not Frenzy[h].stance then //and guillotine and outrage
+                            call AddUnitAnimationProperties(h.hero, "Alternate", false)
+                            call AddUnitAnimationProperties(h.hero, "Defend", true)
+                        else
+                            set tag = 2
+                        endif
+                    endif
+                    
+                    if fully_disabled then //recovering into strong disability
+                        if not start_stand_anim then
+                            set start_stand_anim = true
+                            call SetUnitAnimation(h.hero, "Morph Defend")
+                            call QueueUnitAnimation(h.hero, "Stand Defend")
+                        elseif finished_standing then
+                            set fully_disabled = false
+                            call fullyDisable(false)
+                        endif
+                    endif
+                else
+                    if not slightly_hurt then //light disability
+                        set slightly_hurt = true
+                        
+                        call SetUnitTurnSpeed(h.hero, 0.5)
+                        set h.msbonus = BloodBurn.PENALTY_MOD
+
+                        if not Frenzy[h].stance then //and guillotine and outrage
+                            call AddUnitAnimationProperties(h.hero, "Defend", false)
+                            call AddUnitAnimationProperties(h.hero, "Alternate", true)
+                        else
+                            set tag = 1
+                        endif
+                    endif
+                    
+                    if fully_disabled then //recovering into light disability
+                        if not start_stand_anim then
+                            set start_stand_anim = true
+                            call SetUnitAnimation(h.hero, "Morph Alternate")
+                            call QueueUnitAnimation(h.hero, "Stand Alternate")
+                        elseif finished_standing then
+                            set fully_disabled = false
+                            call fullyDisable(false)
+                        endif
+                    endif
+                endif
+            elseif not recovered then
+                set recovered = true
+                set h.msbonus = 1
+                call SetUnitTurnSpeed(h.hero, GetUnitDefaultTurnSpeed(h.hero))
+
+                if greatly_hurt then //recovering from strong disability
+                    if tag == 0 then
+                        if not Frenzy[h].stance then //and guillotine and outrage
+                            call AddUnitAnimationProperties(h.hero, "Defend", false)
+                        else
+                            set tag = -2 //if tag has been set then unset it later
+                        endif
+                    else
+                        set tag = 0 //if tag was never set then leave it alone
+                    endif
+                    set greatly_hurt = false
+                    call strongDisable(false)
+
+                elseif slightly_hurt then //recovering from light disability
+                    if tag == 0 then
+                        if not Frenzy[h].stance then //and guillotine and outrage
+                            call AddUnitAnimationProperties(h.hero, "Alternate", false)
+                        else
+                            set tag = -1 //if tag has been set then unset it later
+                        endif
+                    else
+                        set tag = 0 //if tag was never set then leave it alone
+                    endif
+                    set slightly_hurt = false
+                    
+                else //recovering from full disability into normal...somehow?
+                    set fully_disabled = false
+                    call fullyDisable(false)
+                    call SetUnitAnimation(h.hero, "Morph Alternate")
+                    call QueueUnitAnimation(h.hero, "Stand")
+                endif
+            endif
+            //call BJDebugMsg(I2S(severity))
+            if tag != 0 then
+                if not Frenzy[h].stance then //and guillotine and outrage
+                    if tag > 0 then
+                        if tag == 1 then
+                            call AddUnitAnimationProperties(h.hero, "Alternate", true)
+                        else
+                            call AddUnitAnimationProperties(h.hero, "Defend", true)
+                        endif
+                        set tag = 0
+                    else
+                        call AddUnitAnimationProperties(h.hero, "Alternate", false)
+                        call AddUnitAnimationProperties(h.hero, "Defend", false)
+                        set tag = 0
+                    endif
+                endif
+            endif
+
+            set this = Timer(.timer).next
+            exitwhen this == 0
+        endloop
+        return true
+    endmethod
+
+    private method fullyDisable takes boolean b returns nothing
+        if b then
+            call h.disableSkill(Snap.SPELLID)
+            call h.disableSkill(Frenzy.SPELLID)
+            call h.disableSkill(SPELLID)
+            call h.disableSkill(BloodBurn.SPELLID)
+            call h.disableSkill(Guillotine.SPELLID)
+            call h.disableSkill(Outrage.SPELLID)
+        else
+            call h.enableSkill(Snap.SPELLID)
+            call h.enableSkill(Frenzy.SPELLID)
+            call h.enableSkill(SPELLID)
+            call h.enableSkill(BloodBurn.SPELLID)
+            call h.enableSkill(Guillotine.SPELLID)
+            call h.enableSkill(Outrage.SPELLID)
+        endif
+    endmethod
+
+    private method strongDisable takes boolean b returns nothing
+        if b then
+            call h.modPow(PENALTY)
+            call h.modSpd(PENALTY)
+            call h.disableSkill(Snap.SPELLID)
+            call h.disableSkill(SPELLID)
+            call h.disableSkill(BloodBurn.SPELLID)
+            call h.disableSkill(Guillotine.SPELLID)
+            call h.disableSkill(Outrage.SPELLID)
+        else
+            call h.modPow(-PENALTY)
+            call h.modSpd(-PENALTY)
+            call h.enableSkill(Snap.SPELLID)
+            call h.enableSkill(SPELLID)
+            call h.enableSkill(BloodBurn.SPELLID)
+            call h.enableSkill(Guillotine.SPELLID)
+            call h.enableSkill(Outrage.SPELLID)
+        endif
+    endmethod
+    
+    private static method onInit takes nothing returns nothing
+        call RegisterSpellEffectEvent(SPELLID, function thistype.run)
+        set expireC = Condition(function thistype.expire)
+        set expireI = thistype.expire
+        call RegisterPlayerUnitEvent(EVENT_PLAYER_UNIT_ISSUED_ORDER, function thistype.stop)
+        set this_struct = Table.create()
+    endmethod
+endstruct
+
+endlibrary

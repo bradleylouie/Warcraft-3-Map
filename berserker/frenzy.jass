@@ -1,0 +1,466 @@
+library BerserkerFrenzy uses SpellEffectEvent, Math, BerserkerOverstrain
+
+globals
+    private constant real MAX_DAMAGE         = 10
+    private constant real MIN_DAMAGE         = 8
+    private constant real CLOSE_AOE          = 125
+    private constant real EDGE_AOE           = 200 //"sweetspot" bonus
+    //private constant real MAX_DAMAGE_ANGLEDIFF = 0.7854 //45 deg from front, used for old angle damage bonus
+    private constant real DAMAGE_ANGLEDIFF = 2.00713 //115 deg from front, so a 230 degree arc
+    private constant real ATTACK_TIME        = 1.0
+    private constant real ATTACK_POINT       = 0.367
+    private constant real MOVEMENT_PERIOD    = 0.2
+    private constant real COST               = 2
+    private constant real MIN_MOVEMENT_DIST  = 64
+    private constant string SFX              = "animeslash.mdx"
+    private constant string DEMONIZE_SFX     = "animeslashdark.mdx"
+    private constant string SWING_SND        = "Units\\Orc\\HeroTaurenChieftain\\HeroTaurenChieftainAttack1.wav"
+    private constant string DEMONIZE_SND     = "deathknightswing.wav"
+    private constant string HIT_SND          = "Sound\\Units\\Combat\\MetalHeavyChopFlesh"
+    private constant string HIT_SFX          = "frenzyhit.mdx"
+    private constant real HITSTUN	         = 0.9
+	private constant real HITSTUN_F          = 0.16 //how much of the hitstun anim is spent frozen
+    private constant real MIN_KNOCKBACK      = 15
+	//string SLAM = "frenzy impact.wav"
+	//Sound slam
+endglobals
+
+struct Frenzy extends array
+    implement TimerHead
+    implement KeyDown
+    private Timer timer
+    private static boolexpr dclickC
+    private static integer dclickI
+    static constant integer SPELLID = 'A002'
+    private static constant real MOVEMENT_MOD = 0.2 * (1/MOVEMENT_PERIOD) * TICK32
+    HeroData h
+    
+    boolean on
+    real a
+    real next_a
+    real t                  //real time passed
+    real progress           //modified progress
+    real turn_delay         //turnrate compensation time
+    real next_turn_delay    //queued turnrate
+    boolean attack_queued
+    boolean attacking
+    boolean played_animation
+    boolean dealt_damage
+    boolean mirrored
+    boolean played_sound
+    boolean disabled
+    real move_tick
+    real move_clamp
+    real enemy_momentum
+    real next_move_clamp
+    effect sfx
+    static sound array demonize_snd[4]
+    static sound array swing_snd[4]
+    static Sound array hit_snd[3]
+    static integer sound_i
+
+    integer hit_enemy
+    integer hit_volume
+    boolean stance //frenzy animation playing, for use with penalty anims
+
+    public static method initialize takes thistype this returns nothing
+        set .h = this
+        set .timer = Timer.create(TICK32, dclickC, dclickI)
+        call add(.timer)
+        set id[.timer] = this
+        call regKey($41)
+        set mirrored = false
+        set on = false
+        set t = 0
+		set h.disabled_skills.integer[SPELLID] = 0
+        set disabled = false
+        set stance = false
+    endmethod
+
+    private static method run takes nothing returns nothing
+        local thistype this = GetUnitUserData(GetTriggerUnit())
+        local unit u = .h.hero
+        local real x1
+        local real y1
+        local real x2
+        local real y2
+        local real dx1
+        local real dy1
+        local real a1
+        local real a2
+
+        if Outrage[h].on then
+            return
+        endif
+        if not on then
+            call h.orderStop()
+            call changeState(true)
+
+            set stance = true
+            set sfx = null
+            set hit_enemy = 0
+            set hit_volume = 54
+            set played_sound = false
+            set on = true
+            set x1 = h.x
+            set y1 = h.y
+            set x2 = h.mousex+16
+            set y2 = h.mousey
+            set dx1 = x2-x1
+            set dy1 = y2-y1 //distance hero pos -> new click
+            set a1 = mod(Atan2(dy1, dx1)*RADTODEG, 360) //angle of current click
+            set a2 = GetUnitFacing(u)
+
+            //set turn_delay up to 0.25 seconds based on angle difference
+            //this gives enough time for the unit to turn so the animation doesn't look like shit
+            //base 1 tick turn_delay so hero can make adjustments for very small angle differences
+            set .turn_delay = TICK32+0.00145*(Acos(Cos(a1*DEGTORAD-a2*DEGTORAD)))*RADTODEG
+            set .next_turn_delay= 0
+            //set x and y to static distance
+            set .a = a1
+            call SetUnitFacing(u, .a)
+            if mirrored then
+                call QueueUnitAnimation(u, "stand defend upgrade")
+            else
+                call QueueUnitAnimation(u, "stand defend ready")
+            endif
+            set .t = 0
+            set .attack_queued = false
+            set .attacking = true
+
+            set move_clamp = GetDistance(x1, y1, x2, y2)-MIN_MOVEMENT_DIST
+            if move_clamp < 0 then
+                set move_clamp = 0
+            endif
+
+        elseif t > turn_delay then
+            call changeState(true)
+
+            set x1 = h.x
+            set y1 = h.y
+            set x2 = h.mousex+16
+            set y2 = h.mousey
+            set dx1 = x2-x1
+            set dy1 = y2-y1 //distance hero pos -> new click
+            set a1 = mod(Atan2(dy1, dx1)*RADTODEG, 360) //angle of current click
+            set a2 = GetUnitFacing(u)
+
+            set .attack_queued = true
+            set .next_turn_delay = 0.00145*(Acos(Cos(a1*DEGTORAD-a2*DEGTORAD)))*RADTODEG
+            set .next_a = a1
+            set next_move_clamp = GetDistance(x1, y1, x2, y2)-MIN_MOVEMENT_DIST
+            if next_move_clamp < 0 then
+                set next_move_clamp = 0
+            endif
+        endif
+    endmethod
+    
+    private static method periodic takes nothing returns boolean
+        local thistype this = thistype(Timer.expired).first
+        local real t
+        local unit u
+        local unit fog = null
+        local real ad
+        local real tr
+
+        local real x1
+        local real y1
+        local real x2
+        local real y2
+        local real dx1
+        local real dy1
+        local real a1
+        local real a2
+        local boolean dark
+        local real fa
+        local real move_loop_dist
+        
+        loop
+            set this = id[this]
+            if h.is_moving and not attacking then
+                set mirrored = false
+                if stance then
+                    set stance = false
+                endif
+            endif
+
+            if .attacking then
+                set .t = .t + TICK32
+                set u = .h.hero
+                //----------------------------------------
+                //dynamically change attack progression based on speed
+                set .progress = .progress + TICK32*.h.getSpdBonus()
+                
+                //animation & turn_delay handling
+                if .t > .turn_delay then
+                    if not .played_animation then
+                        //animations
+                        //queueing the animations immediately allows the animation to play through fully
+                        if mirrored then
+                            if not (h.getSpd(false) < 7) then
+                                call SetUnitAnimation(u, "attack upgrade")
+                                call QueueUnitAnimation(u, "stand ready")
+                            else
+                                call SetUnitAnimation(u, "attack defend upgrade")
+                                call QueueUnitAnimation(u, "stand first")
+                            endif
+                        else
+                            if not (h.getSpd(false) < 7) then
+                                call SetUnitAnimationByIndex(u, 4)
+                                call QueueUnitAnimation(u, "stand upgrade")
+                            else
+                                call SetUnitAnimation(u, "attack defend")
+                                call QueueUnitAnimation(u, "stand second")
+                            endif
+                        endif
+                        set .played_animation = true
+                        if move_clamp > GetUnitMoveSpeed(h.hero)*0.2 then
+                            set move_clamp = GetUnitMoveSpeed(h.hero)*0.2
+                        endif
+                        set enemy_momentum = move_clamp
+                    endif
+                    if .progress < ATTACK_TIME-0.1 then
+                        //dynamic animation speed
+                        if not (h.getSpd(false) < 7) then
+                            call SetUnitTimeScale(u, 0.97*h.getSpdBonus())
+                        else
+                            call SetUnitTimeScale(u, 0.84*h.getSpdBonus())
+                        endif
+                    else
+                        //stops ugly animation bugs associated with high speeds
+                        call SetUnitTimeScale(u, 1)
+                    endif
+                else
+                    //progress does not move while turn_delay is ongoing
+                    set .progress = 0
+                endif
+
+                if not played_sound and progress > 0.25-0.05*h.getSpdBonus() and progress > 0  then
+                    set played_sound = true
+                    set tr = GetRandomReal(0.85,1.15)
+                    call StartSound(swing_snd[sound_i])
+                    call SetSoundPosition(swing_snd[sound_i], h.x, h.y, 0)
+                    call SetSoundPlayPosition(swing_snd[sound_i],220)
+                    call SetSoundPitch(swing_snd[sound_i], tr)
+                    if Snap[h].on then
+                        call StartSound(demonize_snd[sound_i])
+                        call SetSoundPosition(demonize_snd[sound_i], h.x, h.y, 0)
+                        call SetSoundPitch(demonize_snd[sound_i], tr)
+                    endif
+                    set sound_i = sound_i+1
+                    if sound_i > 3 then
+                        set sound_i = 0
+                    endif
+                endif
+
+                //dealt_damage and damage dealing
+                if .progress > ATTACK_POINT then
+                    if not .dealt_damage then
+                        call Overstrain.drain(.h, COST)
+                        if Snap[h].tint < 128 then
+                            set dark = true
+                            set sfx = AddSpecialEffect(DEMONIZE_SFX, h.x, h.y)
+                        else
+                            set dark = false
+                            set sfx = AddSpecialEffect(SFX, h.x, h.y)
+                        endif
+                        call BlzSetSpecialEffectYaw(sfx, a*bj_DEGTORAD)
+                        call BlzSetSpecialEffectHeight(sfx, 64)
+                        //call BlzSetSpecialEffectColor(sfx, 255, 64, 64)
+                        call BlzSetSpecialEffectScale(sfx, 1.25)
+                        if not mirrored then
+                            if not (h.getSpd(false) < 6) then
+                                call BlzSetSpecialEffectRoll(sfx, pi-0.10472)
+                            else
+                                call BlzSetSpecialEffectRoll(sfx, pi+0.261799)
+                            endif
+                        else
+                            if not (h.getSpd(false) < 6) then
+                                call BlzSetSpecialEffectRoll(sfx, 0.10472)
+                            else
+                                call BlzSetSpecialEffectRoll(sfx, -0.261799)
+                            endif
+                        endif
+                        call DestroyEffect(sfx)
+
+                        set move_tick = enemy_momentum*.95
+                        if move_tick < MIN_KNOCKBACK then
+                            set move_tick = MIN_KNOCKBACK
+                        endif
+
+                        call GroupEnumUnitsInRange(grp, h.x, h.y, EDGE_AOE, null)
+                        call GroupEnumUnitsInRange(grp2, h.x, h.y, CLOSE_AOE, null)
+                        loop
+                            set fog = FirstOfGroup(grp)
+                            exitwhen null==fog
+                            if IsUnitEnemy(fog, .h.owner) and EnemyData[fog].is_alive then
+                                set fa = Atan2(GetUnitY(fog)-h.y, GetUnitX(fog)-h.x)
+                                set ad = AngleDifferenceRad(a*bj_DEGTORAD, fa)
+                                if IsUnitInGroup(fog, grp2) then
+                                    call Outrage.store(this, .h.damage(fog, MIN_DAMAGE*.h.getPowBonus()))
+                                else
+                                    call Outrage.store(this, .h.damage(fog, MAX_DAMAGE*.h.getPowBonus()))
+                                endif
+                                if ad < DAMAGE_ANGLEDIFF then
+                                    call SetUnitX(fog, GetUnitX(fog)+(move_tick*Cos(a*bj_DEGTORAD)))
+                                    call SetUnitY(fog, GetUnitY(fog)+(move_tick*Sin(a*bj_DEGTORAD)))
+                                    if EnemyData[fog].is_alive then
+                                        call Debuff.hitstun(fog, HITSTUN, true, h.hero)
+                                        call Debuff.hitstunFreeze(fog, HITSTUN_F)
+                                    endif
+                                    call DestroyEffect(AddSpecialEffectTarget(HIT_SFX, fog, "chest"))
+                                    set hit_enemy = hit_enemy+1
+                                    set hit_volume = hit_volume-5
+                                endif
+                            endif
+                            if hit_enemy > 4 then
+                                set hit_enemy = 4
+                                set hit_volume = 34
+                            endif
+                            call GroupRemoveUnit(grp, fog)
+                        endloop
+                        call GroupClear(grp2)
+                        set .dealt_damage = true
+                    endif
+                endif
+                if hit_enemy > 0 then
+                    set hit_enemy = hit_enemy - 1
+                    if not Snap[h].on and hit_enemy > 1 then
+                        call h.hitStop(TICK32)
+                    endif
+                    call hit_snd[GetRandomInt(0,2)].runPointEx(h.x, h.y, 0, hit_volume, GetRandomReal(0.85,1.15))
+                endif
+                
+                //movement
+                if move_clamp > 0 and progress > ATTACK_POINT - MOVEMENT_PERIOD*0.5 then
+                    set move_tick = GetUnitMoveSpeed(h.hero)*MOVEMENT_MOD*h.getSpdBonus()
+                    set move_clamp = move_clamp - move_tick
+                    if move_clamp < 0 then
+                        set move_tick = move_clamp + move_tick
+                    endif
+                    call SetUnitPosition(h.hero, h.x+(move_tick*Cos(a*bj_DEGTORAD)), h.y+(move_tick*Sin(a*bj_DEGTORAD)))
+                    
+                    call h.orderStop()
+                    if null!=sfx then
+                        call BlzSetSpecialEffectPosition(sfx, h.x, h.y, 64)
+                    endif
+                endif
+
+                //undisable the button, allow movement midway through anim
+                if progress > ATTACK_POINT and not keydown and not attack_queued then
+                    call changeState(false)
+                endif
+
+                //ending and queueing repeat attacks
+                if progress > ATTACK_TIME then
+                    if Unshackle[h].severity == 1 then
+                        call SetUnitTurnSpeed(u, .5)
+                    elseif Unshackle[h].severity > 1 then
+                        call SetUnitTurnSpeed(u, .05)
+                    endif
+                    set mirrored = not mirrored
+                    set hit_enemy = 0
+                    set hit_volume = 54
+                    set sfx = null
+                    set played_sound = false
+                    set .played_animation = false
+                    set .dealt_damage = false
+                    if stance and keydown and Unshackle[h].severity != 3 then
+                        set .attack_queued = false
+                        set .t = 0
+                        set progress = 0
+
+                        set x1 = h.x
+                        set y1 = h.y
+                        set x2 = h.mousex+16
+                        set y2 = h.mousey
+                        set dx1 = x2-x1
+                        set dy1 = y2-y1 //distance hero pos -> new click
+                        set a1 = mod(Atan2(dy1, dx1)*RADTODEG, 360) //angle of current click
+                        set a2 = GetUnitFacing(u)
+
+                        set .a = a1
+                        call SetUnitFacing(u, .a)
+                        set .turn_delay = TICK32+0.00145*(Acos(Cos(a1*DEGTORAD-a2*DEGTORAD)))*RADTODEG
+                        set move_clamp = GetDistance(x1, y1, x2, y2)
+                        if move_clamp < MIN_MOVEMENT_DIST then
+                            set move_clamp = 0
+                        else
+                            set move_clamp = move_clamp-MIN_MOVEMENT_DIST
+                        endif
+
+                        call changeState(true)
+                        
+                    elseif stance and attack_queued and Unshackle[h].severity != 3 then
+                        //repeat attack
+                        set .attack_queued = false
+                        set .t = 0
+                        set .progress = 0
+
+                        set .a = .next_a
+                        call SetUnitFacing(u, .a)
+                        set .turn_delay = .next_turn_delay
+                        set move_clamp = next_move_clamp
+
+                        call changeState(true)
+                    else
+                        set .attacking = false
+                        set .progress = 0
+                        set .turn_delay = 0
+                        
+                        set .on = false
+                        call SetUnitTimeScale(u, 1)
+                        call SetUnitPathing(.h.hero, true)
+                        call changeState(false)
+                    endif
+                endif
+                set u = null
+            endif
+            //----------------------------------------
+            
+            set this = Timer(.timer).next
+            exitwhen this == 0
+        endloop
+        return true
+    endmethod
+
+    private method changeState takes boolean start returns nothing
+        if start!=disabled then 
+            if start then
+                call h.disableSkill(SPELLID)
+                call h.disableSkill(Outrage.SPELLID)
+                call h.hold(true)
+                set disabled = true
+                set h.performing_action = true
+            else
+                call h.enableSkill(SPELLID)
+                call h.enableSkill(Outrage.SPELLID)
+                call h.hold(false)
+                set disabled = false
+                set h.performing_action = false
+            endif
+        endif
+    endmethod
+    
+    private static method onInit takes nothing returns nothing
+        local integer i = 0
+		//set slam = Sound.create(SLAM, GetSoundFileDuration(SLAM), false, true)
+        call RegisterSpellEffectEvent(SPELLID, function thistype.run)
+        set dclickC = Condition(function thistype.periodic)
+        set dclickI = thistype.periodic
+        loop
+            set demonize_snd[i] = CreateSound(DEMONIZE_SND, false, false, true, 10, 10, "")
+            call SetSoundVolume(demonize_snd[i], 64)
+            set swing_snd[i] = CreateSound(SWING_SND, false, false, true, 10, 10, "")
+            call SetSoundVolume(swing_snd[i], 80)
+            if i < 3 then
+                set hit_snd[i] = Sound.create(HIT_SND+I2S(i+1)+".wav", 757, false, true)
+            endif
+            set i = i+1
+            exitwhen i == 4
+        endloop
+        set sound_i = 0
+    endmethod
+endstruct
+
+endlibrary
