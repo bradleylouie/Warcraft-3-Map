@@ -1,0 +1,98 @@
+struct Desperation extends array
+    static runmethod run_method = thistype.run
+    private static Table timer_struct
+    private HeroData h
+	boolean is_primary
+    private static constant string TOOLTIP = "% of the time spent during the 12 second duration after activation"
+    private static constant string SECONDARY_TOOLTIP = " during the 12 second duration after activation."
+    integer on //integer just in case you want cooldown resets
+	
+	public static method initialize takes HeroData this, boolean isprimary returns nothing
+        if 0==h then
+            set on = 0
+            set .h = this
+            set h.temperament.is_active = true
+            call h.temperament.setRunFunction(run_method)
+            if isprimary then
+                set h.fulfillment_percentage1 = "100"
+                set h.tooltip1 = TOOLTIP
+                set h.tooltip2 = "."
+                set h.hidden_tooltip = SECONDARY_TOOLTIP
+                set h.temperament.cooldown = 90
+            elseif h.deprivation != 1 then
+                set h.fulfillment_percentage2 = "100"
+                set h.tooltip2 = SECONDARY_TOOLTIP
+                set h.temperament.cooldown = 75
+            else
+				set h.fulfillment_percentage1 = "100"
+				set h.tooltip1 = TOOLTIP + Deprivation.TOOLTIP_ADDENDUM
+                set h.temperament.cooldown = 120
+                call h.modPow(-2)
+			endif
+            set is_primary = isprimary
+            set h.deprived_tooltip = deprivedTooltip
+        endif
+    endmethod
+
+	static method deprivedTooltip takes HeroData this returns nothing
+        if h.deprivation != 0 then
+			set h.fulfillment_percentage1 = "100"
+			set h.tooltip1 = TOOLTIP
+            set h.temperament.cooldown = 120
+		else
+			set h.fulfillment_percentage1 = "100"
+			set h.tooltip1 = TOOLTIP
+            set h.tooltip2 = "."
+            set h.temperament.cooldown = 90
+		endif
+	endmethod
+	
+    static method callDestroy takes HeroData this returns nothing
+		call destroy()
+	endmethod
+	method destroy takes nothing returns nothing
+		set h = 0
+        set h.temperament.is_active = false
+        if is_primary then
+			set h.tooltip1 = ""
+		elseif h.deprivation != 1 then
+			set h.tooltip2 = "."
+		else
+			set h.tooltip1 = Deprivation.TOOLTIP
+			call h.modPow(2)
+		endif
+	endmethod
+	
+	static method check takes HeroData this returns real
+        if 0==on then
+            return 0.0
+        else
+            return 0.1
+        endif
+    endmethod
+
+    static method run takes HeroData this returns nothing
+        local timer run_timer
+        if 0!=h then
+            set on = on+1
+            set h.mp_t = MANA_REGEN_DELAY
+            set run_timer = CreateTimer()
+            if is_primary then
+                call TimerStart(run_timer, 12, false, function thistype.runEnd)
+            endif
+            set timer_struct.integer[GetHandleId(run_timer)] = this
+            set run_timer = null
+        endif
+    endmethod
+
+    static method runEnd takes nothing returns nothing
+		local timer expired = GetExpiredTimer()
+		local thistype this = timer_struct.integer[GetHandleId(expired)]
+		set on = on-1
+		set expired = null
+	endmethod
+
+    private static method onInit takes nothing returns nothing
+        set timer_struct = Table.create()
+    endmethod
+endstruct

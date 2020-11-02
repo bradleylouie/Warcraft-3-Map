@@ -1,0 +1,78 @@
+struct Discipline extends array
+	private static constant real MODIFIER = 0.15
+	private static constant real TIME_TICK = 0.1*MODIFIER
+	private static constant string TOOLTIP = "% of the time spent with over " 
+	private static constant string TOOLTIP2 = "% mana" 
+	private static constant string SECONDARY_TOOLTIP = " while having over " 
+	private static constant string SECONDARY_TOOLTIP2 = "% mana."
+    private HeroData h
+	boolean is_primary
+	
+	/*boolean is_primary_valid
+	boolean is_secondary_valid
+	real primary_temp_value
+	real secondary_temp_value
+	real temperament_fulfilled_time*/
+	
+	public static method initialize takes HeroData this, boolean isprimary returns nothing
+		if 0==h then
+			set .h = this
+			if isprimary then
+				set h.fulfillment_percentage1 = "15"
+				set h.tooltip1 = TOOLTIP + "50" + TOOLTIP2
+				set h.tooltip2 = "."
+				set h.hidden_tooltip = SECONDARY_TOOLTIP + "50" + SECONDARY_TOOLTIP2
+			elseif h.deprivation != 1 then
+				set h.fulfillment_percentage2 = "15"
+				set h.tooltip2 = SECONDARY_TOOLTIP + "40" + SECONDARY_TOOLTIP2
+			else
+				set h.fulfillment_percentage1 = "15"
+				set h.tooltip1 = TOOLTIP + "75" + TOOLTIP2 + Deprivation.TOOLTIP_ADDENDUM
+				call h.modPow(-2)
+			endif
+			set is_primary = isprimary
+			set h.deprived_tooltip = deprivedTooltip
+		endif
+    endmethod
+
+	static method deprivedTooltip takes HeroData this returns nothing
+		if h.deprivation != 0 then
+			set h.fulfillment_percentage1 = "15"
+			set h.tooltip1 = TOOLTIP + "75" + TOOLTIP2
+		else
+			set h.fulfillment_percentage1 = "15"
+			set h.tooltip1 = TOOLTIP + "50" + TOOLTIP2
+			set h.tooltip2 = "."
+		endif
+	endmethod
+	
+	static method callDestroy takes HeroData this returns nothing
+		call destroy()
+	endmethod
+	method destroy takes nothing returns nothing
+		set h = 0
+		if is_primary then
+			set h.tooltip1 = ""
+		elseif h.deprivation != 1 then
+			set h.tooltip2 = "."
+		else
+			set h.tooltip1 = Deprivation.TOOLTIP
+			call h.modPow(2)
+		endif
+	endmethod
+	
+	static method check takes HeroData this returns real
+		if h.deprivation == 0 then
+			if is_primary then
+				if h.percentage_mana > 0.49 then
+					return TIME_TICK
+				endif
+			elseif h.percentage_mana > 0.39 then
+				return TIME_TICK
+			endif
+		elseif h.percentage_mana > 0.74 then
+			return TIME_TICK
+		endif
+		return 0.0
+    endmethod
+endstruct

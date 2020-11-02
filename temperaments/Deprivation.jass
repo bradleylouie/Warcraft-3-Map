@@ -1,0 +1,62 @@
+struct Deprivation extends array
+    private HeroData h
+	boolean is_primary
+	static constant string TOOLTIP = "Mana regeneration is halved. Gain 6 power"
+	static constant string TOOLTIP_ADDENDUM = ". Mana regeneration is halved otherwise. Gain 4 power"
+	static constant string TOOLTIP_ADDENDUM2 = ". Gain 2 power."
+	
+	public static method initialize takes HeroData this, boolean isprimary returns nothing
+		if 0==h then
+			set .h = this
+			if isprimary then
+				set h.deprivation = 1 //1 means primary
+				call h.modPow(6)
+				set h.fulfillment_percentage1 = "0"
+				set h.tooltip1 = TOOLTIP
+				set h.tooltip2 = "."
+				set h.hidden_tooltip = ""
+			else
+				set h.deprivation = 2 //2 means secondary
+				call h.modPow(-2)
+				call h.deprived_tooltip.evaluate(h)
+				set h.fulfillment_percentage2 = "100"
+				set h.tooltip2 = TOOLTIP_ADDENDUM2
+			endif
+			set is_primary = isprimary
+		endif
+    endmethod
+	
+	static method callDestroy takes HeroData this returns nothing
+		call destroy()
+	endmethod
+	method destroy takes nothing returns nothing
+		set h.deprivation = 0
+		if is_primary then
+			if h.secondary_temperament != -1 then
+				set h.tooltip1 = ""
+				call h.modPow(-4)
+			else
+				set h.tooltip1 = ""
+				call h.modPow(-6)
+			endif
+		else
+			call h.deprived_tooltip.evaluate(h)
+			set h.tooltip2 = ""
+			call h.modPow(-2)
+		endif
+		set h = 0
+	endmethod
+	
+	static method check takes HeroData this returns real
+		if is_primary then
+			if h.secondary_temperament != -1 then
+				return 0.1
+			else
+				return 0.0
+			endif
+		else
+			return 0.1
+		endif
+    endmethod
+
+endstruct

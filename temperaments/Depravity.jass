@@ -1,0 +1,112 @@
+struct Depravity extends array
+	static thistype array depravity_array[MAX_PLAYERS]
+	static integer max_index = 0
+	private static constant real PRIMARY_MODIFIER = .1 //10 damage for 1 second
+	private static constant real SECONDARY_MODIFIER = .125 //8 damage for 1 second
+	private static constant real DEPRIVED_MODIFIER = .06667 //15 damage for 1 second
+	private static constant string TOOLTIP = "% of the damage taken by you and any allies in seconds (processed over time)"
+	private static constant string SECONDARY_TOOLTIP = " as you and any allies take 8 damage per second."
+    private HeroData h
+	boolean is_primary
+	private integer index
+	real time_pool
+	
+	public static method initialize takes HeroData this, boolean isprimary returns nothing
+		if 0==h then
+			set .h = this
+			set depravity_array[max_index] = this
+			set index = max_index
+			set max_index = max_index + 1
+			if isprimary then
+				set h.fulfillment_percentage1 = "10"
+				set h.tooltip1 = TOOLTIP
+				set h.tooltip2 = "."
+				set h.hidden_tooltip = ""
+			elseif h.deprivation != 1 then
+				set h.fulfillment_percentage2 = "12.5"
+				if h.hidden_tooltip != "" then
+					set h.tooltip1 = TOOLTIP
+					set h.tooltip2 = h.hidden_tooltip
+				else
+					set h.tooltip2 = SECONDARY_TOOLTIP
+				endif
+			else
+				set h.fulfillment_percentage1 = "6.66"
+				set h.tooltip1 = TOOLTIP + Deprivation.TOOLTIP_ADDENDUM
+				call h.modPow(-2)
+			endif
+			set is_primary = isprimary
+			set h.deprived_tooltip = deprivedTooltip
+			set time_pool = 0
+		endif
+    endmethod
+
+	static method deprivedTooltip takes HeroData this returns nothing
+		if h.deprivation != 0 then
+			set h.fulfillment_percentage1 = "6.66"
+			set h.tooltip1 = TOOLTIP
+		else
+			set h.fulfillment_percentage1 = "10"
+			set h.tooltip1 = TOOLTIP
+			set h.tooltip2 = "."
+		endif
+	endmethod
+	
+	static method callDestroy takes HeroData this returns nothing
+		call destroy()
+	endmethod
+	method destroy takes nothing returns nothing
+		set h = 0
+		set depravity_array[index] = depravity_array[max_index-1]
+		set max_index = max_index - 1
+		if is_primary then
+			set h.tooltip1 = ""
+		elseif h.deprivation != 1 then
+			if h.hidden_tooltip != "" then
+				set h.tooltip1 = h.hidden_tooltip
+				set h.hidden_tooltip = h.tooltip2
+			endif
+			set h.tooltip2 = "."
+		else
+			set h.tooltip1 = Deprivation.TOOLTIP
+			call h.modPow(2)
+		endif
+	endmethod
+	
+	static method check takes HeroData this returns real
+		local real tp = time_pool
+		if time_pool < 0.1 then
+			set time_pool = 0
+			return tp
+		else
+			set time_pool = time_pool - 0.1
+			return 0.1
+		endif
+    endmethod
+	
+	static method dmg takes nothing returns nothing
+		local thistype this
+		local integer i = 0
+		
+		loop
+			exitwhen i == max_index
+			set this = depravity_array[i]
+
+			if h.deprivation == 0 then
+				if is_primary then
+					set time_pool = time_pool + (hero_damaged_amount * PRIMARY_MODIFIER)
+				else
+					set time_pool = time_pool + (hero_damaged_amount * SECONDARY_MODIFIER)
+				endif
+			else
+				set time_pool = time_pool + (hero_damaged_amount * DEPRIVED_MODIFIER)
+			endif
+			
+			set i = i+1
+		endloop
+	endmethod
+    
+    private static method onInit takes nothing returns nothing
+		call CreateRealEventTrigger.execute("hero_damaged_event", 1.00, function thistype.dmg)
+    endmethod
+endstruct
